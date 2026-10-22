@@ -1,1 +1,1 @@
-{"mcpServers":{"agentic-browser-space":{"command":"node","args":["${CLAUDE_PLUGIN_ROOT}/src/plugin-mcp.mjs"]}}}
+{"mcpServers":{"agentic-browser-space":{"command":"node","args":["${CLAUDE_PLUGIN_ROOT}/src/plugin-mcp.mjs","--harness","claude"]}}}

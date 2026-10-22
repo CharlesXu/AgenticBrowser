@@ -1,8 +1,22 @@
 {
-  "name":"agentic-browser", "version":"0.1.0",
-  "description":"Operate an explicitly selected Agentic Browser task space through scoped MCP.",
-  "author":{"name":"The Agentic Browser Team"},
-  "homepage":"https://charlesxu.github.io/AgenticBrowser/",
-  "skills":"./skills/", "mcpServers":"./.mcp.json",
-  "interface":{"displayName":"Agentic Browser","shortDescription":"Browse in your own task space","developerName":"The Agentic Browser Team","category":"Productivity","capabilities":["Interactive","Read","Write"]}
+  "name": "agentic-browser",
+  "version": "0.2.1",
+  "description": "Operate an explicitly selected Agentic Browser task space through scoped MCP.",
+  "author": {
+    "name": "The Agentic Browser Team"
+  },
+  "homepage": "https://charlesxu.github.io/AgenticBrowser/",
+  "skills": "./skills/",
+  "mcpServers": "./.mcp.json",
+  "interface": {
+    "displayName": "Agentic Browser",
+    "shortDescription": "Browse in your own task space",
+    "developerName": "The Agentic Browser Team",
+    "category": "Productivity",
+    "capabilities": [
+      "Interactive",
+      "Read",
+      "Write"
+    ]
+  }
 }

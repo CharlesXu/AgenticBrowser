@@ -47,6 +47,9 @@
 #include "components/viz/common/frame_sinks/copy_output_result.h"
 #include "content/public/browser/devtools_agent_host.h"
 #include "content/public/browser/devtools_agent_host_client.h"
+#include "content/public/browser/download_manager.h"
+#include "content/public/browser/download_item_utils.h"
+#include "components/download/public/common/download_item.h"
 #include "content/public/browser/host_zoom_map.h"
 #include "content/public/browser/page.h"
 #include "content/public/browser/render_widget_host_view.h"
@@ -217,11 +220,14 @@ class TaskSpace : public content::DevToolsAgentHostClient {
     }
   }
   void Detach() {
+    ReleaseRemoteInput();
     if (host_) {
       host_->DetachClient(this);
     }
     host_.reset();
     pending_.clear();
+    sessions.clear();
+    events.clear();
   }
   bool Attach(content::WebContents* contents) {
     auto host = content::DevToolsAgentHost::GetOrCreateFor(contents);
@@ -233,13 +239,26 @@ class TaskSpace : public content::DevToolsAgentHostClient {
       return false;
     }
     host_ = std::move(host);
+    EnableFrames("");
     return true;
   }
-  void Send(const char* method, base::DictValue params) {
+  void EnableFrames(const std::string& session) {
+    base::DictValue attach;
+    attach.Set("autoAttach", true); attach.Set("waitForDebuggerOnStart", false);
+    attach.Set("flatten", true);
+    base::ListValue filter;
+    filter.Append(base::DictValue().Set("type", "iframe"));
+    filter.Append(base::DictValue().Set("exclude", true));
+    attach.Set("filter", std::move(filter));
+    Send("Target.setAutoAttach", std::move(attach), session);
+    Send("Page.enable", base::DictValue(), session);
+  }
+  void Send(const char* method, base::DictValue params, const std::string& session = "") {
     base::DictValue message;
     message.Set("id", ++sequence_);
     message.Set("method", method);
     message.Set("params", std::move(params));
+    if (!session.empty()) message.Set("sessionId", session);
     const auto json = base::WriteJson(message).value();
     host_->DispatchProtocolMessage(this, base::as_byte_span(json));
   }
@@ -270,15 +289,29 @@ class TaskSpace : public content::DevToolsAgentHostClient {
     pointer_mask = 0;
   }
   using ProtocolReply = base::OnceCallback<void(base::DictValue)>;
-  void Request(const char* method, base::DictValue params, ProtocolReply callback) {
+  void Request(const char* method, base::DictValue params, ProtocolReply callback,
+               const std::string& session = "") {
     base::DictValue message;
     const int id = ++sequence_;
     pending_.emplace(id, std::move(callback));
     message.Set("id", id);
     message.Set("method", method);
     message.Set("params", std::move(params));
+    if (!session.empty()) message.Set("sessionId", session);
     const auto json = base::WriteJson(message).value();
     host_->DispatchProtocolMessage(this, base::as_byte_span(json));
+    base::SingleThreadTaskRunner::GetCurrentDefault()->PostDelayedTask(
+        FROM_HERE, base::BindOnce([](base::WeakPtr<TaskSpace> self, int id,
+                                    std::string session, std::string method) {
+          if (!self) return;
+          auto entry = self->pending_.extract(id);
+          if (entry.empty()) return;
+          if (self->host_ && (method == "Runtime.evaluate" || method == "Runtime.callFunctionOn"))
+            self->Send("Runtime.terminateExecution", base::DictValue(), session);
+          base::DictValue failure;
+          failure.Set("error", base::DictValue().Set("message", "operation_timeout; may_have_late_effects"));
+          std::move(entry.mapped()).Run(std::move(failure));
+        }, weak_.GetWeakPtr(), id, session, std::string(method)), base::Seconds(4));
   }
   void DispatchProtocolMessage(content::DevToolsAgentHost*,
                                base::span<const uint8_t> bytes) override {
@@ -287,7 +320,40 @@ class TaskSpace : public content::DevToolsAgentHostClient {
         base::JSON_PARSE_RFC);
     if (!message) return;
     const auto id = message->FindInt("id");
-    if (!id) return;
+    if (!id) {
+      const auto* method = message->FindString("method");
+      if (!method) return;
+      if (*method == "Target.attachedToTarget") {
+        const auto* session = message->FindStringByDottedPath("params.sessionId");
+        const auto* info = message->FindDictByDottedPath("params.targetInfo");
+        if (session && info && info->FindString("type") &&
+            *info->FindString("type") == "iframe") {
+          sessions.Set(*session, info->Clone());
+          EnableFrames(*session);
+        }
+      } else if (*method == "Target.detachedFromTarget") {
+        if (const auto* session = message->FindStringByDottedPath("params.sessionId"))
+          sessions.Remove(*session);
+      }
+      // A modal dialog blocks renderer command replies. Return its receipt so
+      // the Harness can answer it, instead of waiting behind the blocked input.
+      if (*method == "Page.javascriptDialogOpening") {
+        auto waiting = std::move(pending_);
+        pending_.clear();
+        for (auto& [request_id, callback] : waiting) {
+          base::DictValue receipt;
+          receipt.Set("id", request_id);
+          base::DictValue result;
+          if (const auto* params = message->FindDict("params"))
+            result.Set("dialog", params->Clone());
+          receipt.Set("result", std::move(result));
+          std::move(callback).Run(std::move(receipt));
+        }
+      }
+      if (events.size() == 256) events.erase(events.begin());
+      events.Append(std::move(*message));
+      return;
+    }
     auto entry = pending_.extract(*id);
     if (!entry.empty()) std::move(entry.mapped()).Run(std::move(*message));
   }
@@ -295,10 +361,12 @@ class TaskSpace : public content::DevToolsAgentHostClient {
     host_.reset(); pending_.clear();
   }
   bool MayAttachToURL(const GURL& url, bool is_webui) override {
-    return !is_webui && url.SchemeIsHTTPOrHTTPS();
+    return !is_webui && (url.SchemeIsHTTPOrHTTPS() || url.IsAboutBlank());
   }
   bool IsTrusted() override { return false; }
-  bool MayReadLocalFiles() override { return false; }
+  // Only the authenticated, allowlisted DOM.setFileInputFiles operation can
+  // exercise this permission. File URL navigation and network file reads are denied.
+  bool MayReadLocalFiles() override { return true; }
   bool MayWriteLocalFiles() override { return false; }
   bool AllowUnsafeOperations() override { return false; }
 
@@ -315,6 +383,9 @@ class TaskSpace : public content::DevToolsAgentHostClient {
   std::string snapshot_id;
   content::WeakDocumentPtr snapshot_document;
   std::set<int> snapshot_nodes;
+  base::DictValue sessions;
+  base::ListValue events;
+  std::set<uint32_t> downloads;
   std::string lease;
   std::string previous_lease;
   bool human = false;
@@ -352,9 +423,11 @@ class TaskSpace : public content::DevToolsAgentHostClient {
   scoped_refptr<content::DevToolsAgentHost> host_;
   int sequence_ = 0;
   std::map<int, ProtocolReply> pending_;
+  base::WeakPtrFactory<TaskSpace> weak_{this};
 };
 
-class PocParts : public TabStripModelObserver {
+class PocParts : public TabStripModelObserver,
+                 public content::DownloadManager::Observer {
  public:
   PocParts() {
     for (const char* name : {"main", "task-a", "task-b"})
@@ -369,6 +442,7 @@ class PocParts : public TabStripModelObserver {
         {base::MayBlock(), base::TaskShutdownBehavior::BLOCK_SHUTDOWN});
     CHECK(base::FeatureList::IsEnabled(features::kTabGroupsFocusing));
     browser_ = main->GetWeakPtr();
+    download_observation_.Observe(main->GetProfile()->GetDownloadManager());
     auto* model = main->GetTabStripModel();
     for (auto& space : spaces_) {
       space->browser = browser_;
@@ -404,6 +478,7 @@ class PocParts : public TabStripModelObserver {
             base::BindOnce(&PocParts::ServerReady, weak_.GetWeakPtr())));
   }
   void Shutdown() {
+    download_observation_.Reset();
     remote_timer_.Stop();
     weak_.InvalidateWeakPtrs();
     for (auto& space : spaces_) {
@@ -429,6 +504,14 @@ class PocParts : public TabStripModelObserver {
   }
 
  private:
+  void OnDownloadCreated(content::DownloadManager*, download::DownloadItem* item) override {
+    const int owner = SpaceFor(content::DownloadItemUtils::GetWebContents(item));
+    if (owner > 0 && !spaces_[owner]->lease.empty())
+      spaces_[owner]->downloads.insert(item->GetId());
+  }
+  void ManagerGoingDown(content::DownloadManager*) override {
+    download_observation_.Reset();
+  }
   void BrowserClosed(BrowserWindowInterface* browser) {
     browser->GetTabStripModel()->RemoveObserver(this);
     for (auto& space : spaces_) {
@@ -1255,6 +1338,7 @@ class PocParts : public TabStripModelObserver {
         return;
       }
       if (*action == "release") {
+        space->ReleaseRemoteInput();
         space->lease.clear();
         space->needs_observation = false;
         ++space->generation;
@@ -1279,6 +1363,8 @@ class PocParts : public TabStripModelObserver {
     }
     if (!contents->GetLastCommittedURL().SchemeIsHTTPOrHTTPS() &&
         !contents->GetLastCommittedURL().IsAboutBlank() &&
+        *action != "tabs" && *action != "selectTab" && *action != "closeTab" &&
+        *action != "newTab" && *action != "navigate" &&
         !(*action == "observe" && contents->GetLastCommittedURL().is_empty())) {
       Reject(std::move(reply), 403, "web_page_only");
       return;
@@ -1314,6 +1400,99 @@ class PocParts : public TabStripModelObserver {
     const auto* tab = data->FindString("tab");
     if (!tab || *tab != target) {
       Reject(std::move(reply), 403, "wrong_tab");
+      return;
+    }
+    if (*action == "downloads") {
+      base::ListValue entries;
+      auto* manager = browser_->GetProfile()->GetDownloadManager();
+      if (const auto cancel = data->FindInt("cancel")) {
+        if (!space->downloads.contains(*cancel) || !manager->GetDownload(*cancel)) {
+          Reject(std::move(reply), 403, "download_not_authorized"); return;
+        }
+        manager->GetDownload(*cancel)->Cancel(true);
+      }
+      for (const auto id : space->downloads) {
+        auto* item = manager->GetDownload(id);
+        if (!item) continue;
+        base::DictValue entry;
+        entry.Set("id", static_cast<int>(id));
+        entry.Set("url", item->GetOriginalUrl().spec());
+        entry.Set("filename", item->GetFileNameToReportUser().AsUTF8Unsafe());
+        entry.Set("state", static_cast<int>(item->GetState()));
+        entry.Set("failure", static_cast<int>(item->GetLastReason()));
+        if (item->GetState() == download::DownloadItem::COMPLETE)
+          entry.Set("path", item->GetTargetFilePath().AsUTF8Unsafe());
+        entries.Append(std::move(entry));
+      }
+      result.Set("downloads", std::move(entries));
+      Respond(std::move(reply), 200, std::move(result)); return;
+    }
+    if (*action == "protocol" || *action == "events") {
+      if (!space->Attach(contents)) { Reject(std::move(reply), 409, "target_busy"); return; }
+      if (*action == "events") {
+        result.Set("events", std::move(space->events)); space->events = base::ListValue();
+        result.Set("sessions", space->sessions.Clone());
+        Respond(std::move(reply), 200, std::move(result)); return;
+      }
+      const auto* method = data->FindString("method");
+      const auto* params = data->FindDict("params");
+      const auto* session = data->FindString("session");
+      // Page-local commands only: never expose Browser, Target discovery,
+      // profile cookies/storage, permissions, or global download preferences.
+      static constexpr std::string_view allowed[] = {
+        "Accessibility.getFullAXTree", "DOM.resolveNode", "DOM.describeNode",
+        "DOM.getDocument", "DOM.querySelector", "DOM.querySelectorAll",
+        "DOM.getBoxModel", "DOM.getContentQuads", "DOM.getFrameOwner", "DOM.scrollIntoViewIfNeeded",
+        "DOM.setFileInputFiles", "Runtime.evaluate", "Runtime.callFunctionOn",
+        "Runtime.getProperties", "Runtime.releaseObject", "Runtime.releaseObjectGroup",
+        "Runtime.terminateExecution", "Page.getFrameTree", "Page.createIsolatedWorld",
+        "Page.enable", "Page.reload", "Page.captureScreenshot", "Page.getLayoutMetrics",
+        "Page.handleJavaScriptDialog", "Page.setInterceptFileChooserDialog",
+        "Input.dispatchKeyEvent", "Input.dispatchMouseEvent", "Input.insertText"
+      };
+      if (!method || !params || !std::ranges::contains(allowed, *method) ||
+          (session && !session->empty() && !space->sessions.contains(*session))) {
+        Reject(std::move(reply), 403, "protocol_not_authorized"); return;
+      }
+      if (*method == "DOM.setFileInputFiles") {
+        const auto* files = params->FindList("files");
+        if (!files || std::ranges::any_of(*files, [](const auto& file) {
+              return !file.is_string() ||
+                  !base::FilePath::FromUTF8Unsafe(file.GetString()).IsAbsolute();
+            })) { Reject(std::move(reply), 400, "absolute_file_paths_required"); return; }
+      }
+      if (*method == "Input.dispatchKeyEvent") {
+        const int key = params->FindInt("windowsVirtualKeyCode").value_or(0);
+        const auto* type = params->FindString("type");
+        if (type && *type == "keyUp") space->held_keys.erase(key);
+        else if (type && (*type == "keyDown" || *type == "rawKeyDown"))
+          space->held_keys.insert_or_assign(key, params->Clone());
+      } else if (*method == "Input.dispatchMouseEvent") {
+        space->pointer_x = params->FindDouble("x").value_or(0);
+        space->pointer_y = params->FindDouble("y").value_or(0);
+        const int buttons = params->FindInt("buttons").value_or(0);
+        space->pointer_mask = (buttons & 1) | ((buttons & 2) << 1) | ((buttons & 4) >> 1);
+      }
+      space->snapshot_id.clear(); space->snapshot_nodes.clear();
+      const auto control = space->lease;
+      const int generation = space->generation;
+      const int id = SpaceFor(contents);
+      auto selected = contents->GetWeakPtr();
+      auto bounded_params = params->Clone();
+      if (*method == "Runtime.evaluate") bounded_params.Set("timeout", 3000);
+      space->Request(method->c_str(), std::move(bounded_params), base::BindOnce(
+        [](base::WeakPtr<PocParts> self, int id, std::string control, int generation,
+           base::WeakPtr<content::WebContents> selected, Alive alive, Reply reply,
+           base::DictValue message) {
+          if (!alive->load()) return;
+          if (!self || !selected || self->spaces_[id]->lease != control ||
+              self->spaces_[id]->generation != generation ||
+              !self->spaces_[id]->Contains(selected.get())) {
+            Reject(std::move(reply), 409, "stale_control"); return;
+          }
+          Respond(std::move(reply), 200, std::move(message));
+        }, weak_.GetWeakPtr(), id, control, generation, selected,
+           std::move(alive), std::move(reply)), session ? *session : "");
       return;
     }
     if (*action == "screenshot") {
@@ -1554,6 +1733,8 @@ class PocParts : public TabStripModelObserver {
   int port_ = 0;
   base::SequenceBound<LocalServer> server_;
   base::RepeatingTimer remote_timer_;
+  base::ScopedObservation<content::DownloadManager, content::DownloadManager::Observer>
+      download_observation_{this};
   base::WeakPtrFactory<PocParts> weak_{this};
 };
 // Each normal window owns its spaces and capabilities. Profiles never share

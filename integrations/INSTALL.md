@@ -23,7 +23,7 @@ codex plugin marketplace add /absolute/path/to/kit
 codex plugin add agentic-browser@agentic-browser
 ```
 
-The plugin includes the canonical Skill and stdio MCP. By default its MCP reads `~/.config/agentic-browser/connection.json`. Bind to that exact path above for the first installation, or set the Harness process environment `AGENTIC_BROWSER_CONNECTION` to another private connection file. Never store the token itself in configuration or chat. For two Harnesses, use separate environment paths and separate authorized spaces.
+The plugin includes the canonical Skill and stdio MCP. The Codex plugin reads `~/.config/agentic-browser/codex.json`; Claude Code reads `~/.config/agentic-browser/claude.json`. Bind each to a different authorized task space using the commands above, or set the Harness process environment `AGENTIC_BROWSER_CONNECTION` to another private connection file. Never store the token itself in configuration or chat. For two Harnesses, keep the separate defaults or use separate environment paths and authorized spaces.
 
 For a source checkout instead of a kit, run `npm ci --ignore-scripts` in the project and **build the kit first** with `npm run integration:pack`; do not install source symlinks into a plugin cache.
 
@@ -35,7 +35,7 @@ claude plugin marketplace add /absolute/path/to/kit
 claude plugin install agentic-browser@agentic-browser
 ```
 
-Uses the same private binding and canonical Skill. Check the current Harness CLI’s help before changing user configuration; preserve existing plugins and MCP entries. Restart the Harness if needed for discovery. Do not install an additional standalone Skill when using a plugin.
+Uses its own private `claude.json` binding and the same canonical Skill. Check the current Harness CLI’s help before changing user configuration; preserve existing plugins and MCP entries. Restart the Harness if needed for discovery. Do not install an additional standalone Skill when using a plugin.
 
 ## Other Harnesses / 通用 MCP
 
@@ -49,6 +49,10 @@ Different Harnesses have different configuration formats; merge only this entry,
 
 ## Minimal acceptance / 最小验收
 
-Read MCP resource `agentic-browser://guide`; discover 18 tools. Observe → claim → snapshot a harmless local page → click/fill a permitted field → observe the result → release. Main and another space must remain inaccessible. On human takeover, stop and wait for explicit return; resume with the old ownership proof and use the new generation.
+Read MCP resource `agentic-browser://guide`; discover 33 tools. Observe → claim → page_snapshot a harmless local page → click/fill a permitted field → observe the result → release. Main and another space must remain inaccessible. On human takeover, stop and wait for explicit return; resume with the old ownership proof and use the new generation.
 
-Locally verified: real stdio MCP initialization, semantic snapshot/click/fill, stale-reference rejection, screenshot, space-local tabs and main-space rejection. Plugin manifests and packaged runtime are checked separately; successful packaging alone does not prove installation in every Harness. Unsupported: raw CDP, arbitrary JavaScript, cross-origin frame traversal, dialogs, downloads and uploads. The model is not connected.
+Implemented: semantic selectors/references, same-origin and cross-origin frames, form controls and contenteditable, bounded waits and page JavaScript, dialogs, file chooser/upload, owned downloads, screenshots and page-local protocol. See the packaged Skill for exact APIs and remaining limits. Global CDP, main-space access and Profile-wide mutation are denied. Successful packaging does not prove installation in every Harness. The model is not connected.
+
+Verified on 2026-10-23: user-level plugin 0.2.1 in Codex 0.163.0 and Claude Code 2.1.251. Both native Harness runtimes discovered the Skill and 33 MCP tools, then performed Chinese fill/click, handoff, rejection while human-controlled, native UI return, resume and release in separate authorized spaces. This was a runtime integration check with zero model turns; other Harness versions and autonomous model behavior are not covered.
+
+For Node scripts, use `plugins/agentic-browser/src/page.mjs`, or run `node plugins/agentic-browser/src/agentic-browser.mjs run --connection /absolute/private/connection.json /absolute/script.mjs`. The script exports `default async function(task)`; the CLI claims and releases the authorized space. `skill` prints the version-matched guide.

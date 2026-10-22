@@ -92,7 +92,7 @@ npm run mcp -- --connection "/测试Profile路径/task-a.json"
 npm run mcp -- --connection "/测试Profile路径/task-b.json"
 ```
 
-Harness 配置应直接启动 `node /项目绝对路径/src/mcp.ts --connection /连接文件绝对路径`，避免 npm 启动提示混入 stdio 协议；本项目不自动修改全局 Harness 配置。MCP 提供 18 个工具，控制与坐标工具为：`space_list`、`space_observe`、`space_claim`、`space_release`、`space_handoff`、`space_resume`、`space_navigate`、`space_click`、`space_type`、`space_scroll`。另有 `space_snapshot`、`space_screenshot`、`space_click_ref`、`space_fill`、`space_tabs`、`space_new_tab`、`space_select_tab`、`space_close_tab`。单进程只能操作其连接文件授权的一个非主空间，不能通过工具参数指定其他 Space。用法见 [项目 Skill](skills/agentic-browser/SKILL.md)。
+Harness 配置应直接启动 `node /项目绝对路径/src/mcp.ts --connection /连接文件绝对路径`，避免 npm 启动提示混入 stdio 协议；本项目不自动修改全局 Harness 配置。MCP 提供 33 个工具，保留的控制与坐标工具为：`space_list`、`space_observe`、`space_claim`、`space_release`、`space_handoff`、`space_resume`、`space_navigate`、`space_click`、`space_type`、`space_scroll`。另有 `space_snapshot`、`space_screenshot`、`space_click_ref`、`space_fill`、`space_tabs`、`space_new_tab`、`space_select_tab`、`space_close_tab`。新增 15 个 `page_*` 工具覆盖跨域框架、表单、条件等待、页面 JS、键鼠、截图、弹窗和文件操作，并提供 `src/page.mjs` 的 TaskSpace/Page SDK；详细能力与限制见 [Ego 能力对齐](docs/Ego能力对齐.md)。单进程只能操作其连接文件授权的一个非主空间，不能通过工具参数指定其他 Space。用法见 [项目 Skill](skills/agentic-browser/SKILL.md)。
 
 VNC 本地依赖和启动：
 

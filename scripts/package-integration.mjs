@@ -11,7 +11,7 @@ for(const name of ['.codex-plugin','.claude-plugin','.mcp.json','mcp.claude.json
 for(const name of ['package.json','package-lock.json'])await cp(resolve(root,'integrations',name),resolve(plugin,name));
 await cp('skills',resolve(plugin,'skills'),{recursive:true});
 await mkdir(resolve(plugin,'src'),{recursive:true});
-for(const name of ['mcp.ts','space-client.ts','plugin-mcp.mjs'])await cp(resolve(root,'src',name),resolve(plugin,'src',name));
+for(const name of ['mcp.ts','space-client.ts','plugin-mcp.mjs','page.mjs','agentic-browser.mjs'])await cp(resolve(root,'src',name),resolve(plugin,'src',name));
 for(const name of ['.agents','.claude-plugin'])await cp(resolve(root,name),resolve(destination,name),{recursive:true});
 await mkdir(resolve(destination,'scripts'),{recursive:true});
 await cp('scripts/bind-space.mjs',resolve(destination,'scripts/bind-space.mjs'));
