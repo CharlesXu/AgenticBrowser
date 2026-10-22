@@ -32,6 +32,8 @@
 #include "base/timer/timer.h"
 #include "base/uuid.h"
 #include "chrome/browser/profiles/profile.h"
+#include "chrome/browser/tab_group_sync/tab_group_sync_service_factory.h"
+#include "components/saved_tab_groups/public/tab_group_sync_service.h"
 #include "chrome/browser/ui/browser_tabstrip.h"
 #include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
 #include "chrome/browser/ui/browser_window/public/browser_collection_observer.h"
@@ -49,6 +51,8 @@
 #include "content/public/browser/page.h"
 #include "content/public/browser/render_widget_host_view.h"
 #include "content/public/browser/web_contents.h"
+#include "content/public/browser/render_frame_host.h"
+#include "content/public/browser/weak_document_ptr.h"
 #include "net/base/ip_address.h"
 #include "net/base/ip_endpoint.h"
 #include "net/log/net_log_source.h"
@@ -217,6 +221,7 @@ class TaskSpace : public content::DevToolsAgentHostClient {
       host_->DetachClient(this);
     }
     host_.reset();
+    pending_.clear();
   }
   bool Attach(content::WebContents* contents) {
     auto host = content::DevToolsAgentHost::GetOrCreateFor(contents);
@@ -264,11 +269,31 @@ class TaskSpace : public content::DevToolsAgentHostClient {
     held_keys.clear();
     pointer_mask = 0;
   }
-  // Input replies carry no page data. The caller verifies effects by observing
-  // the page; the response below deliberately says dispatched, not completed.
+  using ProtocolReply = base::OnceCallback<void(base::DictValue)>;
+  void Request(const char* method, base::DictValue params, ProtocolReply callback) {
+    base::DictValue message;
+    const int id = ++sequence_;
+    pending_.emplace(id, std::move(callback));
+    message.Set("id", id);
+    message.Set("method", method);
+    message.Set("params", std::move(params));
+    const auto json = base::WriteJson(message).value();
+    host_->DispatchProtocolMessage(this, base::as_byte_span(json));
+  }
   void DispatchProtocolMessage(content::DevToolsAgentHost*,
-                               base::span<const uint8_t>) override {}
-  void AgentHostClosed(content::DevToolsAgentHost*) override { host_.reset(); }
+                               base::span<const uint8_t> bytes) override {
+    auto message = base::JSONReader::ReadDict(
+        std::string_view(reinterpret_cast<const char*>(bytes.data()), bytes.size()),
+        base::JSON_PARSE_RFC);
+    if (!message) return;
+    const auto id = message->FindInt("id");
+    if (!id) return;
+    auto entry = pending_.extract(*id);
+    if (!entry.empty()) std::move(entry.mapped()).Run(std::move(*message));
+  }
+  void AgentHostClosed(content::DevToolsAgentHost*) override {
+    host_.reset(); pending_.clear();
+  }
   bool MayAttachToURL(const GURL& url, bool is_webui) override {
     return !is_webui && url.SchemeIsHTTPOrHTTPS();
   }
@@ -287,13 +312,16 @@ class TaskSpace : public content::DevToolsAgentHostClient {
   std::optional<tab_groups::TabGroupId> group;
   std::vector<content::WebContents::ScopedIgnoreInputEvents> guards;
   std::map<content::WebContents*, base::ScopedClosureRunner> rendering;
+  std::string snapshot_id;
+  content::WeakDocumentPtr snapshot_document;
+  std::set<int> snapshot_nodes;
   std::string lease;
   std::string previous_lease;
   bool human = false;
   bool awaiting_resume = false;
   bool needs_observation = false;
   int generation = 1;
-  const std::string vnc_token = name == "task-b" ? Nonce() : "";
+  const std::string vnc_token = name != "main" ? Nonce() : "";
   std::map<std::string, base::TimeTicks> viewers;
   std::string remote_client;
   bool streaming = false;
@@ -323,6 +351,7 @@ class TaskSpace : public content::DevToolsAgentHostClient {
  private:
   scoped_refptr<content::DevToolsAgentHost> host_;
   int sequence_ = 0;
+  std::map<int, ProtocolReply> pending_;
 };
 
 class PocParts : public TabStripModelObserver {
@@ -537,6 +566,14 @@ class PocParts : public TabStripModelObserver {
       model->ChangeTabGroupVisuals(
           *space->group, tab_groups::TabGroupVisualData(
                              title, tab_groups::TabGroupColorId::kBlue));
+      // These groups implement workspaces; do not duplicate them as pinned
+      // saved-group buttons in the bookmarks bar.
+      if (auto* service = tab_groups::TabGroupSyncServiceFactory::GetForProfile(
+              browser_->GetProfile())) {
+        if (auto saved = service->GetGroup(*space->group);
+            saved && saved->is_pinned())
+          service->UpdateGroupPosition(saved->saved_guid(), false, std::nullopt);
+      }
       space->RefreshInputGuard();
       space->KeepTaskRendering();
       if (space->streaming)
@@ -558,6 +595,7 @@ class PocParts : public TabStripModelObserver {
         continue;
       auto& ui = presentation.emplace_back();
       ui.id = i;
+      ui.number = SpaceNumber(i);
       ui.name = SpaceName(i);
       ui.can_close = CanClose(i);
       ui.viewers = static_cast<int>(space.viewers.size());
@@ -606,11 +644,17 @@ class PocParts : public TabStripModelObserver {
     space.RefreshInputGuard();
     RefreshControls();
   }
+  // Display ordinals are recyclable. Capability IDs remain immutable so an
+  // old MCP/VNC connection can never acquire a newly created workspace.
+  int SpaceNumber(int id) const {
+    int number = 0;
+    for (int i = 1; i <= id; ++i)
+      number += !spaces_[i]->closed;
+    return number;
+  }
   std::u16string SpaceName(int id) const {
-    if (id == 0)
-      return AgenticText("main");
-    return base::NumberToString16(id) + u" · " +
-        (id == 1 ? AgenticText("space_a") : id == 2 ? AgenticText("space_b") : AgenticText("space"));
+    return id == 0 ? AgenticText("main")
+                   : AgenticText("space_number", {base::NumberToString16(SpaceNumber(id))});
   }
   bool CanClose(int id) const {
     const auto& space = *spaces_[id];
@@ -683,7 +727,9 @@ class PocParts : public TabStripModelObserver {
     }
     result.Set("tasks", std::move(tasks));
     base::DictValue vnc;
-    vnc.Set("task-b", spaces_[2]->vnc_token);
+    for (auto& space : spaces_)
+      if (space->name != "main" && !space->closed && !space->closing)
+        vnc.Set(space->name, space->vnc_token);
     result.Set("vnc", std::move(vnc));
     files_->PostTask(FROM_HERE,
                      base::BindOnce(
@@ -738,9 +784,10 @@ class PocParts : public TabStripModelObserver {
     RefreshControls();
   }
   void ExpireRemote() {
-    auto& space = *spaces_[2];
-    if (space.closed)
-      return;
+    for (auto& item : spaces_) {
+    auto& space = *item;
+    if (space.closed || space.name == "main")
+      continue;
     const auto now = base::TimeTicks::Now();
     bool changed = false;
     for (auto it = space.viewers.begin(); it != space.viewers.end();) {
@@ -757,13 +804,52 @@ class PocParts : public TabStripModelObserver {
       StopStream(space);
     else if (changed)
       RefreshControls();
+    }
+  }
+  void CapturePreview(TaskSpace& space, Alive alive, Reply reply) {
+    auto* contents = space.Contents();
+    auto* view = contents ? contents->GetRenderWidgetHostView() : nullptr;
+    if (!view || !view->IsSurfaceAvailableForCopy() ||
+        !(contents->GetLastCommittedURL().SchemeIsHTTPOrHTTPS() ||
+          contents->GetLastCommittedURL().IsAboutBlank())) {
+      Reject(std::move(reply), 409, "preview_unavailable");
+      return;
+    }
+    const auto size = view->GetViewBounds().size();
+    const auto url = contents->GetLastCommittedURL();
+    const auto weak_contents = contents->GetWeakPtr();
+    const auto id = SpaceFor(contents);
+    const auto output = gfx::Size(480, std::max(1, 480 * size.height() /
+                                                   std::max(1, size.width())));
+    view->CopyFromSurface(gfx::Rect(), output, base::Milliseconds(800),
+        base::BindPostTaskToCurrentDefault(base::BindOnce(
+          [](base::WeakPtr<PocParts> self, int id,
+             base::WeakPtr<content::WebContents> contents, GURL url,
+             Alive alive, Reply reply, const content::CopyFromSurfaceResult& frame) {
+            if (!alive->load()) return;
+            if (!self || !contents || self->spaces_[id]->closed ||
+                self->spaces_[id]->Contents() != contents.get() ||
+                contents->GetLastCommittedURL() != url || !frame.has_value() ||
+                frame->bitmap.drawsNothing()) {
+              Reject(std::move(reply), 409, "preview_changed"); return;
+            }
+            const auto png = gfx::PNGCodec::FastEncodeBGRASkBitmap(frame->bitmap, true);
+            if (!png) { Reject(std::move(reply), 409, "capture_failed"); return; }
+            base::DictValue result;
+            result.Set("png", base::Base64Encode(*png));
+            result.Set("width", frame->bitmap.width());
+            result.Set("height", frame->bitmap.height());
+            Respond(std::move(reply), 200, std::move(result));
+          }, weak_.GetWeakPtr(), id, weak_contents, url,
+             std::move(alive), std::move(reply))));
   }
   void CaptureFrame(TaskSpace& space, Alive alive, Reply reply) {
     auto* contents = space.Contents();
     auto* view = contents ? contents->GetRenderWidgetHostView() : nullptr;
     if (!space.streaming || space.capturing || !view ||
         !view->IsSurfaceAvailableForCopy() ||
-        !contents->GetLastCommittedURL().SchemeIsHTTPOrHTTPS()) {
+        !(contents->GetLastCommittedURL().SchemeIsHTTPOrHTTPS() ||
+          contents->GetLastCommittedURL().IsAboutBlank())) {
       Reject(std::move(reply), 409, "frame_unavailable");
       return;
     }
@@ -798,12 +884,12 @@ class PocParts : public TabStripModelObserver {
     view->CopyFromSurface(
         gfx::Rect(), output, base::Milliseconds(800),
         base::BindPostTaskToCurrentDefault(base::BindOnce(
-            &PocParts::FrameCopied, weak_.GetWeakPtr(), std::move(meta),
+            &PocParts::FrameCopied, weak_.GetWeakPtr(), SpaceFor(contents), std::move(meta),
             std::move(alive), std::move(reply))));
   }
-  void FrameCopied(TaskSpace::Frame meta, Alive alive, Reply reply,
+  void FrameCopied(int space_id, TaskSpace::Frame meta, Alive alive, Reply reply,
                    const content::CopyFromSurfaceResult& result) {
-    auto& space = *spaces_[2];
+    auto& space = *spaces_[space_id];
     if (!result.has_value() || result->bitmap.drawsNothing()) {
       space.capturing = false;
       Reject(std::move(reply), 409, "capture_failed");
@@ -823,16 +909,16 @@ class PocParts : public TabStripModelObserver {
           return png ? base::Base64Encode(*png) : std::string();
         }, std::move(bitmap), meta.content_rect),
         base::BindOnce(&PocParts::FrameEncoded, weak_.GetWeakPtr(),
-                        std::move(meta), std::move(alive), std::move(reply)));
+                        space_id, std::move(meta), std::move(alive), std::move(reply)));
   }
-  void FrameEncoded(TaskSpace::Frame meta, Alive alive, Reply reply,
+  void FrameEncoded(int space_id, TaskSpace::Frame meta, Alive alive, Reply reply,
                     std::string png) {
-    auto& space = *spaces_[2];
+    auto& space = *spaces_[space_id];
     space.capturing = false;
     auto* contents = space.Contents();
     if (!alive->load())
       return;
-    if (png.empty() || !space.streaming || !contents ||
+    if (png.empty() || space.closed || !space.streaming || !contents ||
         meta.generation != space.generation ||
         meta.viewport_version != space.viewport_version ||
         meta.url != contents->GetLastCommittedURL().spec() ||
@@ -1039,6 +1125,9 @@ class PocParts : public TabStripModelObserver {
     if (vnc_auth) {
       if (*action == "observe") {
         // Shared read path below; this capability still has no Agent actions.
+      } else if (*action == "preview") {
+        CapturePreview(*space, std::move(alive), std::move(reply));
+        return;
       } else if (*action == "streamStart") {
         space->streaming = true;
         space->stream_seen = base::TimeTicks::Now();
@@ -1198,6 +1287,8 @@ class PocParts : public TabStripModelObserver {
         content::DevToolsAgentHost::GetOrCreateFor(contents)->GetId();
     if (*action == "observe") {
       result.Set("space", space->name);
+      result.Set("number", SpaceNumber(SpaceFor(contents)));
+      result.Set("name", base::UTF16ToUTF8(SpaceName(SpaceFor(contents))));
       result.Set("tab", target);
       result.Set("url", contents->GetLastCommittedURL().spec());
       result.Set("title", base::UTF16ToUTF8(contents->GetTitle()));
@@ -1223,6 +1314,166 @@ class PocParts : public TabStripModelObserver {
     const auto* tab = data->FindString("tab");
     if (!tab || *tab != target) {
       Reject(std::move(reply), 403, "wrong_tab");
+      return;
+    }
+    if (*action == "screenshot") {
+      CapturePreview(*space, std::move(alive), std::move(reply));
+      return;
+    }
+    if (*action == "tabs") {
+      base::ListValue tabs;
+      for (const auto& member : space->members) {
+        if (!member) continue;
+        base::DictValue entry;
+        entry.Set("tab", content::DevToolsAgentHost::GetOrCreateFor(member.get())->GetId());
+        entry.Set("title", base::UTF16ToUTF8(member->GetTitle()));
+        entry.Set("url", member->GetLastCommittedURL().spec());
+        entry.Set("selected", member.get() == contents);
+        tabs.Append(std::move(entry));
+      }
+      result.Set("tabs", std::move(tabs));
+      Respond(std::move(reply), 200, std::move(result)); return;
+    }
+    if (*action == "newTab" || *action == "selectTab" || *action == "closeTab") {
+      auto* model = browser_->GetTabStripModel();
+      if (*action == "newTab") {
+        reconciling_ = true;
+        auto* added = chrome::AddAndReturnTabAt(browser_.get(), GURL("about:blank"), -1, false);
+        space->members.push_back(added->GetWeakPtr());
+        space->selected = added->GetWeakPtr();
+        reconciling_ = false;
+      } else {
+        const auto* requested = data->FindString("targetTab");
+        auto found = std::ranges::find_if(space->members, [&](const auto& member) {
+          return requested && member &&
+            content::DevToolsAgentHost::GetOrCreateFor(member.get())->GetId() == *requested;
+        });
+        if (found == space->members.end()) {
+          Reject(std::move(reply), 403, "wrong_tab"); return;
+        }
+        if (*action == "selectTab") space->selected = *found;
+        else model->CloseWebContentsAt(model->GetIndexOfWebContents(found->get()),
+                                       TabCloseTypes::CLOSE_CREATE_HISTORICAL_TAB);
+      }
+      Reconcile();
+      result.Set("dispatched", true);
+      Respond(std::move(reply), 200, std::move(result)); return;
+    }
+    if (*action == "snapshot" || *action == "clickRef" || *action == "fillRef") {
+      if (!space->Attach(contents)) {
+        Reject(std::move(reply), 409, "target_busy"); return;
+      }
+      const int id = SpaceFor(contents);
+      const auto control = space->lease;
+      const int generation = space->generation;
+      const auto document = contents->GetPrimaryMainFrame()->GetWeakDocumentPtr();
+      auto valid = base::BindRepeating(
+          [](base::WeakPtr<PocParts> self, int id, std::string control, int generation,
+             content::WeakDocumentPtr document) {
+            if (!self || !document.AsRenderFrameHostIfValid()) return false;
+            const auto& current = *self->spaces_[id];
+            return !current.closed && !current.closing && current.lease == control &&
+                current.generation == generation && !current.human &&
+                current.remote_client.empty() && current.Contents() &&
+                current.Contents()->GetPrimaryMainFrame() == document.AsRenderFrameHostIfValid();
+          }, weak_.GetWeakPtr(), id, control, generation, document);
+      if (*action == "snapshot") {
+        space->Request("Accessibility.getFullAXTree", base::DictValue(),
+          base::BindOnce([](base::WeakPtr<PocParts> self, int id,
+               base::RepeatingCallback<bool()> valid, content::WeakDocumentPtr document,
+               Alive alive, Reply reply, base::DictValue message) {
+            if (!alive->load()) return;
+            if (!valid.Run()) { Reject(std::move(reply), 409, "stale_control"); return; }
+            const auto* nodes = message.FindListByDottedPath("result.nodes");
+            if (!nodes) { Reject(std::move(reply), 409, "snapshot_failed"); return; }
+            auto& current = *self->spaces_[id];
+            current.snapshot_id = Nonce(); current.snapshot_document = document;
+            current.snapshot_nodes.clear();
+            base::ListValue tree;
+            for (const auto& item : *nodes) {
+              const auto& node = item.GetDict();
+              if (node.FindBool("ignored").value_or(false)) continue;
+              base::DictValue out;
+              if (const auto* role = node.FindStringByDottedPath("role.value")) out.Set("role", *role);
+              if (const auto* name = node.FindStringByDottedPath("name.value")) out.Set("name", name->substr(0, 2000));
+              if (const auto* value = node.FindDict("value")) out.Set("value", value->Clone());
+              if (const auto* properties = node.FindList("properties")) out.Set("properties", properties->Clone());
+              if (auto backend = node.FindInt("backendDOMNodeId")) {
+                out.Set("ref", current.snapshot_id + ":" + base::NumberToString(*backend));
+                current.snapshot_nodes.insert(*backend);
+              }
+              tree.Append(std::move(out));
+              if (tree.size() >= 1000) break;
+            }
+            base::DictValue result;
+            result.Set("nodes", std::move(tree));
+            result.Set("truncated", nodes->size() > 1000);
+            Respond(std::move(reply), 200, std::move(result));
+          }, weak_.GetWeakPtr(), id, valid, document, std::move(alive), std::move(reply)));
+        return;
+      }
+      const auto* ref = data->FindString("ref");
+      int backend = 0;
+      if (!ref || !ref->starts_with(space->snapshot_id + ":") ||
+          !base::StringToInt(ref->substr(space->snapshot_id.size() + 1), &backend) ||
+          !space->snapshot_nodes.contains(backend) ||
+          space->snapshot_document.AsRenderFrameHostIfValid() != contents->GetPrimaryMainFrame()) {
+        Reject(std::move(reply), 409, "stale_reference"); return;
+      }
+      const bool fill = *action == "fillRef";
+      const auto* text = data->FindString("text");
+      if (fill && (!text || text->size() > 8192)) {
+        Reject(std::move(reply), 400, "invalid_text"); return;
+      }
+      base::DictValue resolve;
+      resolve.Set("backendNodeId", backend);
+      resolve.Set("objectGroup", "agentic-action");
+      space->Request("DOM.resolveNode", std::move(resolve),
+        base::BindOnce([](base::WeakPtr<PocParts> self, int id,
+             base::RepeatingCallback<bool()> valid, bool fill, std::string text,
+             Alive alive, Reply reply, base::DictValue message) {
+          if (!alive->load()) return;
+          if (!valid.Run()) { Reject(std::move(reply), 409, "stale_control"); return; }
+          const auto* object = message.FindStringByDottedPath("result.object.objectId");
+          if (!object) { Reject(std::move(reply), 409, "stale_reference"); return; }
+          base::DictValue params;
+          params.Set("objectId", *object); params.Set("returnByValue", true);
+          // Fixed browser code only. No caller-supplied JavaScript is exposed.
+          params.Set("functionDeclaration", fill ?
+            "function(){if(!this.isConnected||this.disabled||this.readOnly||!(this instanceof HTMLInputElement||this instanceof HTMLTextAreaElement))return false;this.scrollIntoView({block:'center'});this.focus();this.select();return this.ownerDocument.activeElement===this;}" :
+            "function(){if(!this.isConnected||this.disabled)return null;this.scrollIntoView({block:'center'});const r=this.getBoundingClientRect();if(!r.width||!r.height)return null;const x=r.x+r.width/2,y=r.y+r.height/2;const top=this.ownerDocument.elementFromPoint(x,y);return top&&(top===this||this.contains(top))?{x,y}:null;}");
+          self->spaces_[id]->Request("Runtime.callFunctionOn", std::move(params),
+            base::BindOnce([](base::WeakPtr<PocParts> self, int id,
+                 base::RepeatingCallback<bool()> valid, bool fill, std::string text,
+                 Alive alive, Reply reply, base::DictValue message) {
+              if (!alive->load()) return;
+              if (!valid.Run()) { Reject(std::move(reply), 409, "stale_control"); return; }
+              auto& current = *self->spaces_[id];
+              const auto* value = message.FindByDottedPath("result.result.value");
+              base::DictValue input;
+              if (fill) {
+                if (!value || !value->is_bool() || !value->GetBool()) {
+                  Reject(std::move(reply), 409, "element_not_editable"); return;
+                }
+                input.Set("text", text); current.Send("Input.insertText", std::move(input));
+              } else {
+                const auto* point = value ? value->GetIfDict() : nullptr;
+                const auto x = point ? point->FindDouble("x") : std::nullopt;
+                const auto y = point ? point->FindDouble("y") : std::nullopt;
+                if (!x || !y) { Reject(std::move(reply), 409, "element_not_clickable"); return; }
+                input.Set("x", *x); input.Set("y", *y); input.Set("type", "mousePressed");
+                input.Set("button", "left"); input.Set("buttons", 1); input.Set("clickCount", 1);
+                current.Send("Input.dispatchMouseEvent", input.Clone());
+                input.Set("type", "mouseReleased"); input.Set("buttons", 0);
+                current.Send("Input.dispatchMouseEvent", std::move(input));
+              }
+              base::DictValue release; release.Set("objectGroup", "agentic-action");
+              current.Send("Runtime.releaseObjectGroup", std::move(release));
+              base::DictValue result; result.Set("dispatched", true);
+              Respond(std::move(reply), 200, std::move(result));
+            }, self, id, valid, fill, std::move(text), std::move(alive), std::move(reply)));
+        }, weak_.GetWeakPtr(), id, valid, fill, text ? *text : "",
+           std::move(alive), std::move(reply)));
       return;
     }
     if (*action == "navigate") {

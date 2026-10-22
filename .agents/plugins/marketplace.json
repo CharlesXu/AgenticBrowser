@@ -1,0 +1,1 @@
+{"name":"agentic-browser","interface":{"displayName":"Agentic Browser"},"plugins":[{"name":"agentic-browser","source":{"source":"local","path":"./plugins/agentic-browser"},"policy":{"installation":"AVAILABLE","authentication":"ON_INSTALL"}}]}

@@ -32,7 +32,7 @@
   "card": "$1，$2，$3 个标签页，点击进入空间",
   "pages": "$1 页",
   "count": "$1 个任务空间",
-  "close": "关闭空间 $1",
+  "close": "关闭 $1",
   "summary": "$1 个任务空间（不含主空间），Agent 控制 $2，VNC 观看 $3，远程接管 $4",
   "open_state": "打开空间总览，$1。当前：$2，$3",
   "dots": "\n上蓝：Agent · 中绿：VNC 观看 · 下红：远程接管",
@@ -41,7 +41,7 @@
   "about_updates": "自动更新尚未接入",
   "about_engine": "Chromium 内核 $1",
   "about_license": "Agentic Browser 的诞生离不开 <a href=\"https://www.chromium.org/\">Chromium</a> 开放源代码项目以及其他<a href=\"chrome://credits/\">开放源代码软件</a>。",
-  "vnc_title": "空间 B · 远程观看",
+  "vnc_title": "Agentic Browser · 远程观看",
   "not_connected": "尚未连接",
   "connect": "连接观看",
   "keyboard": "键盘",
@@ -58,5 +58,11 @@
   "resuming_notice": "已交还，等待原 Agent 重新观察后继续。",
   "full_link": "请使用本次浏览器运行生成的完整观看链接。",
   "auth_failed": "远程连接认证失败",
-  "about_copyright": "版权所有{0,date,y} The Agentic Browser Team。保留所有权利。"
+  "about_copyright": "版权所有{0,date,y} The Agentic Browser Team。保留所有权利。",
+  "space_number": "空间 $1",
+  "ui_language": "界面语言",
+  "ui_language_hint": "适用于此浏览器实例的所有个人资料",
+  "ui_language_system": "跟随系统",
+  "ui_language_pending": "重新启动后应用新的界面语言",
+  "choose_space": "选择空间"
 }

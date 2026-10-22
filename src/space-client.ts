@@ -3,7 +3,7 @@ import { z } from 'zod/v4';
 
 const connectionSchema = z.strictObject({
   port: z.number().int().min(1).max(65535),
-  space: z.enum(['task-a', 'task-b']),
+  space: z.string().regex(/^task-[a-z0-9-]{1,64}$/),
   token: z.string().min(16).max(256),
 });
 

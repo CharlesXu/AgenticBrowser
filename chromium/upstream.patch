@@ -6335,6 +6335,25 @@ index b2619baa8f..641e3e7438 100644
    // Always add ChromeBrowserMainExtraPartsGpu last to make sure
    // GpuDataManager initialization could pick up about:flags settings.
    main_parts->AddParts(std::make_unique<ChromeBrowserMainExtraPartsGpu>());
+diff --git a/chrome/browser/chrome_resource_bundle_helper.cc b/chrome/browser/chrome_resource_bundle_helper.cc
+index 1b2a38a1b9..b802509512 100644
+--- a/chrome/browser/chrome_resource_bundle_helper.cc
++++ b/chrome/browser/chrome_resource_bundle_helper.cc
+@@ -72,10 +72,10 @@ std::string InitResourceBundleAndDetermineLocale(PrefService* local_state,
+ 
+   std::string preferred_locale;
+ #if BUILDFLAG(IS_MAC)
+-  // TODO(markusheintz): Read preference pref::kApplicationLocale in order
+-  // to enforce the application locale.
+-  // Tests always get en-US.
+-  preferred_locale = is_running_tests ? "en-US" : std::string();
++  // Agentic Browser offers an in-app UI language preference on macOS.
++  // An empty preference continues to follow the Cocoa application language.
++  preferred_locale = is_running_tests ? "en-US" :
++      local_state->GetString(language::prefs::kApplicationLocale);
+ #else
+   preferred_locale =
+       local_state->GetString(language::prefs::kApplicationLocale);
 diff --git a/chrome/browser/prefs/session_startup_pref.cc b/chrome/browser/prefs/session_startup_pref.cc
 index 0159cee9db..95f2363e89 100644
 --- a/chrome/browser/prefs/session_startup_pref.cc
@@ -6423,6 +6442,110 @@ index aaaf8c6e7e..6ee797219d 100644
    }
  
    protected onRelaunchClick_() {
+diff --git a/chrome/browser/resources/settings/appearance_page/appearance_page.html.ts b/chrome/browser/resources/settings/appearance_page/appearance_page.html.ts
+index b6cf0bffe2..223453e133 100644
+--- a/chrome/browser/resources/settings/appearance_page/appearance_page.html.ts
++++ b/chrome/browser/resources/settings/appearance_page/appearance_page.html.ts
+@@ -63,6 +63,25 @@ export function getHtml(this: SettingsAppearancePageElement) {
+         </cr-button>
+       ` : ''}
+     </div>
++    <div class="cr-row">
++      <div id="uiLanguageLabel" class="flex cr-padded-text">
++        $i18n{agenticUiLanguage}
++        <div class="secondary">$i18n{agenticUiLanguageHint}</div>
++      </div>
++      <select id="uiLanguageSelect" class="md-select"
++          aria-labelledby="uiLanguageLabel" ?disabled="${this.uiLanguageManaged_}"
++          @change="${this.onUILanguageChange_}">
++        <option value="" ?selected="${this.uiLanguage_ === ''}">$i18n{agenticUiLanguageSystem}</option>
++        <option value="zh-CN" ?selected="${this.uiLanguage_ === 'zh-CN'}">简体中文</option>
++        <option value="en-US" ?selected="${this.uiLanguage_ === 'en-US'}">English</option>
++      </select>
++    </div>
++    ${this.uiLanguagePending_ ? html`
++      <div class="cr-row">
++        <div class="flex cr-padded-text secondary">$i18n{agenticUiLanguagePending}</div>
++        <cr-button @click="${this.onUILanguageRelaunchClick_}">$i18n{restart}</cr-button>
++      </div>
++    ` : ''}
+     <div id="colorSchemeModeRow" class="cr-row"
+         ?hidden="${!this.showColorSchemeMode_()}">
+       <div id="colorSchemeModeLabel" class="flex cr-padded-text"
+diff --git a/chrome/browser/resources/settings/appearance_page/appearance_page.ts b/chrome/browser/resources/settings/appearance_page/appearance_page.ts
+index f1631122d3..3f001728d6 100644
+--- a/chrome/browser/resources/settings/appearance_page/appearance_page.ts
++++ b/chrome/browser/resources/settings/appearance_page/appearance_page.ts
+@@ -18,6 +18,7 @@ import {PrefServiceObserverMixinLit} from '/shared/settings/prefs2/pref_service_
+ import {browserProxyFactory, ColorSchemeMode} from 'chrome://resources/cr_components/customize_color_scheme_mode/customize_color_scheme_mode.mojom-webui.js';
+ import type {BrowserProxy as CustomizeColorSchemeModeBrowserProxy} from 'chrome://resources/cr_components/customize_color_scheme_mode/customize_color_scheme_mode.mojom-webui.js';
+ import {I18nMixinLit} from 'chrome://resources/cr_elements/i18n_mixin_lit.js';
++import {sendWithPromise} from 'chrome://resources/js/cr.js';
+ import {assert, assertNotReached} from 'chrome://resources/js/assert.js';
+ import {CrLitElement} from 'chrome://resources/lit/v3_0/lit.rollup.js';
+ import type {PropertyValues} from 'chrome://resources/lit/v3_0/lit.rollup.js';
+@@ -29,7 +30,7 @@ import type {MetricsBrowserProxy} from '../metrics_browser_proxy.js';
+ import {MetricsBrowserProxyImpl} from '../metrics_browser_proxy.js';
+ import {pageVisibility} from '../page_visibility.js';
+ import type {AppearancePageVisibility} from '../page_visibility.js';
+-import {RelaunchMixinLit} from '../relaunch_mixin_lit.js';
++import {RelaunchMixinLit, RestartType} from '../relaunch_mixin_lit.js';
+ import {routes} from '../route.js';
+ import {Router} from '../router.js';
+ import {SettingsViewMixinLit} from '../settings_page/settings_view_mixin_lit.js';
+@@ -130,6 +131,9 @@ export class SettingsAppearancePageElement extends
+ 
+   static override get properties() {
+     return {
++      uiLanguage_: {type: String},
++      uiLanguagePending_: {type: Boolean},
++      uiLanguageManaged_: {type: Boolean},
+       pageVisibility_: {type: Object},
+       defaultZoom_: {type: Number},
+ 
+@@ -182,6 +186,34 @@ export class SettingsAppearancePageElement extends
+     };
+   }
+ 
++  protected accessor uiLanguage_: string = '';
++  protected accessor uiLanguagePending_: boolean = false;
++  protected accessor uiLanguageManaged_: boolean = false;
++
++  private async updateUILanguage_(value?: string): Promise<void> {
++    const result = await sendWithPromise<{locale: string, pending: boolean, managed: boolean}>(
++        'agenticUILanguage', ...(value === undefined ? [] : [value]));
++    this.uiLanguage_ = result.locale;
++    this.uiLanguagePending_ = result.pending;
++    this.uiLanguageManaged_ = result.managed;
++  }
++
++  protected async onUILanguageChange_(event: Event): Promise<void> {
++    const select = event.target as HTMLSelectElement;
++    select.disabled = true;
++    try {
++      await this.updateUILanguage_(select.value);
++    } catch {
++      select.value = this.uiLanguage_;
++    } finally {
++      select.disabled = this.uiLanguageManaged_;
++    }
++  }
++
++  protected onUILanguageRelaunchClick_(): void {
++    this.performRestart(RestartType.RELAUNCH);
++  }
++
+   /**
+    * Dictionary defining page visibility.
+    */
+@@ -327,6 +359,7 @@ export class SettingsAppearancePageElement extends
+ 
+   override connectedCallback() {
+     super.connectedCallback();
++    void this.updateUILanguage_();
+ 
+     this.mirrorPrefs({
+       'autogenerated.theme.policy.color': 'themePolicyColorPref_',
 diff --git a/chrome/browser/resources/settings/settings_menu/settings_menu.html b/chrome/browser/resources/settings/settings_menu/settings_menu.html
 index 0d30190f42..d49c89cc09 100644
 --- a/chrome/browser/resources/settings/settings_menu/settings_menu.html
@@ -6681,8 +6804,84 @@ index 01960e5d34..00c5b8b78d 100644
    SkPath path = style_->GetUnderlinePath(GetLocalBounds());
    cc::PaintFlags flags;
    flags.setAntiAlias(true);
+diff --git a/chrome/browser/ui/webui/settings/appearance_handler.cc b/chrome/browser/ui/webui/settings/appearance_handler.cc
+index 3a5d78e018..5f2e7b5db6 100644
+--- a/chrome/browser/ui/webui/settings/appearance_handler.cc
++++ b/chrome/browser/ui/webui/settings/appearance_handler.cc
+@@ -10,6 +10,13 @@
+ #include "build/build_config.h"
+ #include "chrome/app/chrome_command_ids.h"
+ #include "chrome/browser/profiles/profile.h"
++#include "chrome/browser/browser_process.h"
++#include "components/language/core/browser/pref_names.h"
++#include "components/prefs/pref_service.h"
++#include "ui/base/l10n/l10n_util.h"
++#if BUILDFLAG(IS_MAC)
++#include "ui/base/l10n/l10n_util_mac.h"
++#endif
+ #include "chrome/browser/themes/theme_service_factory.h"
+ #include "chrome/browser/ui/browser_commands.h"
+ #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+@@ -33,6 +40,9 @@ void AppearanceHandler::OnJavascriptAllowed() {}
+ void AppearanceHandler::OnJavascriptDisallowed() {}
+ 
+ void AppearanceHandler::RegisterMessages() {
++  web_ui()->RegisterMessageCallback("agenticUILanguage",
++      base::BindRepeating(&AppearanceHandler::HandleAgenticUILanguage,
++                          base::Unretained(this)));
+   web_ui()->RegisterMessageCallback(
+       "useDefaultTheme",
+       base::BindRepeating(&AppearanceHandler::HandleUseTheme,
+@@ -71,6 +81,34 @@ void AppearanceHandler::RegisterMessages() {
+           base::Unretained(this)));
+ }
+ 
++void AppearanceHandler::HandleAgenticUILanguage(const base::ListValue& args) {
++  CHECK(args.size() == 1 || args.size() == 2);
++  AllowJavascript();
++  auto* prefs = g_browser_process->local_state();
++  if (args.size() == 2) {
++    const auto& locale = args[1].GetString();
++    if ((locale != "" && locale != "en-US" && locale != "zh-CN") ||
++        prefs->IsManagedPreference(language::prefs::kApplicationLocale)) {
++      RejectJavascriptCallback(args[0], base::Value("language_not_available"));
++      return;
++    }
++    prefs->SetString(language::prefs::kApplicationLocale, locale);
++    prefs->CommitPendingWrite();
++  }
++  const auto locale = prefs->GetString(language::prefs::kApplicationLocale);
++#if BUILDFLAG(IS_MAC)
++  const auto system_locale = l10n_util::GetLocaleOverride();
++#else
++  const auto system_locale = l10n_util::GetApplicationLocale("");
++#endif
++  base::DictValue result;
++  result.Set("locale", locale);
++  result.Set("pending", (locale.empty() ? system_locale : locale) !=
++                            g_browser_process->GetApplicationLocale());
++  result.Set("managed", prefs->IsManagedPreference(language::prefs::kApplicationLocale));
++  ResolveJavascriptCallback(args[0], result);
++}
++
+ void AppearanceHandler::HandleUseTheme(ui::SystemTheme system_theme,
+                                        const base::ListValue& args) {
+   DCHECK(system_theme != ui::SystemTheme::kDefault || !profile_->IsChild());
+diff --git a/chrome/browser/ui/webui/settings/appearance_handler.h b/chrome/browser/ui/webui/settings/appearance_handler.h
+index a1abf1e42e..f5e893a701 100644
+--- a/chrome/browser/ui/webui/settings/appearance_handler.h
++++ b/chrome/browser/ui/webui/settings/appearance_handler.h
+@@ -49,6 +49,8 @@ class AppearanceHandler : public SettingsPageUIHandler {
+   // Records the vertical tab strip mode change.
+   void HandleRecordVerticalTabStripModeChanged(const base::ListValue& args);
+ 
++  void HandleAgenticUILanguage(const base::ListValue& args);
++
+   raw_ptr<Profile> profile_;  // Weak pointer.
+ 
+   base::WeakPtrFactory<AppearanceHandler> weak_ptr_factory_{this};
 diff --git a/chrome/browser/ui/webui/settings/settings_localized_strings_provider.cc b/chrome/browser/ui/webui/settings/settings_localized_strings_provider.cc
-index 01763a850c..bca03800fa 100644
+index 01763a850c..eabd6e2866 100644
 --- a/chrome/browser/ui/webui/settings/settings_localized_strings_provider.cc
 +++ b/chrome/browser/ui/webui/settings/settings_localized_strings_provider.cc
 @@ -3,6 +3,9 @@
@@ -6695,13 +6894,17 @@ index 01763a850c..bca03800fa 100644
  
  #include <string>
  
-@@ -351,20 +354,24 @@ void AddAboutStrings(content::WebUIDataSource* html_source, Profile* profile) {
+@@ -351,20 +354,28 @@ void AddAboutStrings(content::WebUIDataSource* html_source, Profile* profile) {
        l10n_util::GetStringUTF16(IDS_SETTINGS_UPGRADE_UP_TO_DATE));
  #endif
  
 -  std::u16string browser_version = VersionUI::GetAnnotatedVersionStringForUi();
 -
 -  html_source->AddString("aboutBrowserVersion", browser_version);
++  html_source->AddString("agenticUiLanguage", AgenticText("ui_language"));
++  html_source->AddString("agenticUiLanguageHint", AgenticText("ui_language_hint"));
++  html_source->AddString("agenticUiLanguageSystem", AgenticText("ui_language_system"));
++  html_source->AddString("agenticUiLanguagePending", AgenticText("ui_language_pending"));
 +  html_source->AddString("aboutPageTitle", AgenticText("about_title"));
 +  html_source->AddString("aboutGetHelpUsingChrome", AgenticText("about_help"));
 +  std::string architecture = base::SysInfo::ProcessCPUArchitecture();
@@ -6855,6 +7058,19 @@ index 154a930642..0ccb694cf5 100644
          </message>
        </if>
      </messages>
+diff --git a/components/language/core/browser/locale_util.cc b/components/language/core/browser/locale_util.cc
+index aa43742055..98c2fcf5b5 100644
+--- a/components/language/core/browser/locale_util.cc
++++ b/components/language/core/browser/locale_util.cc
+@@ -17,7 +17,7 @@ std::string GetApplicationLocale(PrefService* local_state) {
+   // LoadLocaleResources(), which is how the global locale is set.
+   // TODO(asvitkine): We should try to refactor things so that the logic is not
+   // duplicated in multiple files.
+-#if !BUILDFLAG(IS_APPLE)
++#if !BUILDFLAG(IS_APPLE) || BUILDFLAG(IS_MAC)
+   // The pref isn't always registered in unit tests.
+   if (local_state->HasPrefPath(prefs::kApplicationLocale))
+     preferred_locale = local_state->GetString(prefs::kApplicationLocale);
 diff --git a/components/strings/components_chromium_strings_zh-CN.xtb b/components/strings/components_chromium_strings_zh-CN.xtb
 index 694d4cfd55..4baf8ad319 100644
 --- a/components/strings/components_chromium_strings_zh-CN.xtb
@@ -6950,6 +7166,21 @@ index 4a719148a2..8e05dba101 100644
 +<translation id="7977922428805367004">Agentic Browser 提示：使用智慧鏡頭搜尋</translation>
  </translationbundle>
 \ No newline at end of file
+diff --git a/ui/base/l10n/l10n_util.cc b/ui/base/l10n/l10n_util.cc
+index 49b8a67af8..8c4e54b573 100644
+--- a/ui/base/l10n/l10n_util.cc
++++ b/ui/base/l10n/l10n_util.cc
+@@ -172,8 +172,8 @@ std::vector<LanguageTag> GetCandidates() {
+ std::optional<LanguageTag> GetPreferredTag(std::string_view preferred_locale) {
+ #if BUILDFLAG(IS_APPLE)
+   std::string_view locale_override = l10n_util::GetLocaleOverride();
+-  return GetLanguageTagFromString(locale_override.empty() ? preferred_locale
+-                                                          : locale_override);
++  return GetLanguageTagFromString(preferred_locale.empty() ? locale_override
++                                                           : preferred_locale);
+ #elif defined(USE_GLIB) && !BUILDFLAG(IS_CHROMEOS)
+   return std::nullopt;
+ #else
 diff --git a/ui/webui/resources/cr_elements/cr_toolbar/cr_toolbar.html.ts b/ui/webui/resources/cr_elements/cr_toolbar/cr_toolbar.html.ts
 index b2004a0e69..32eb4adbdb 100644
 --- a/ui/webui/resources/cr_elements/cr_toolbar/cr_toolbar.html.ts

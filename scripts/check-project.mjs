@@ -1,0 +1,15 @@
+import assert from 'node:assert/strict';
+import {readFile,readdir,stat} from 'node:fs/promises';
+import {execFileSync} from 'node:child_process';
+for(const folder of ['src','scripts','website'])for(const name of await readdir(folder))if(/\.(mjs|js|ts)$/.test(name))execFileSync(process.execPath,['--check',`${folder}/${name}`],{stdio:'inherit'});
+const en=JSON.parse(await readFile('locales/en-US.json','utf8')),zh=JSON.parse(await readFile('locales/zh-CN.json','utf8'));
+assert.deepEqual(Object.keys(en).sort(),Object.keys(zh).sort(),'locale key parity');
+for(const key of Object.keys(en))assert.deepEqual(en[key].match(/\$\d/g)||[],zh[key].match(/\$\d/g)||[],`placeholders: ${key}`);
+for(const file of ['.agents/plugins/marketplace.json','.claude-plugin/marketplace.json','plugins/agentic-browser/.codex-plugin/plugin.json','plugins/agentic-browser/.claude-plugin/plugin.json','plugins/agentic-browser/.mcp.json','plugins/agentic-browser/mcp.claude.json','integrations/package.json','integrations/package-lock.json','website/releases.json'])JSON.parse(await readFile(file,'utf8'));
+const html=await readFile('website/index.html','utf8');
+for(const path of [...html.matchAll(/(?:src|href)="([^"#:]+)"/g)].map(m=>m[1]))if(!path.startsWith('http'))await stat(`website/${path}`);
+assert.ok(!/<(?:script|link)[^>]+(?:src|href)="https?:/i.test(html),'no third-party scripts/fonts');
+let bytes=0;for(const file of ['index.html','style.css','app.js','assets/portal.png'])bytes+=(await stat(`website/${file}`)).size;
+assert.ok(bytes<100000,'uncompressed first-load budget under 100KB');
+execFileSync('git',['apply','--stat','chromium/upstream.patch'],{stdio:'ignore'});
+console.log(JSON.stringify({syntax:'passed',locales:'passed',manifests:'passed',siteBytes:bytes,patchSyntax:'passed'}));

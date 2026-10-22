@@ -1,0 +1,1 @@
+{"mcpServers":{"agentic-browser-space":{"cwd":".","command":"node","args":["./src/plugin-mcp.mjs"]}}}

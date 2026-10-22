@@ -31,6 +31,10 @@
 #include "ui/base/ui_base_types.h"
 #include "ui/compositor/layer.h"
 #include "ui/color/color_provider.h"
+#include "ui/color/color_id.h"
+#include "components/vector_icons/vector_icons.h"
+#include "ui/base/models/image_model.h"
+#include "ui/views/controls/button/image_button.h"
 #include "ui/gfx/canvas.h"
 #include "ui/gfx/color_utils.h"
 #include "ui/base/resource/resource_bundle.h"
@@ -63,8 +67,35 @@ namespace {
 constexpr SkColor kBlue = SkColorSetRGB(42, 117, 234);
 constexpr SkColor kGreen = SkColorSetRGB(22, 157, 103);
 constexpr SkColor kRed = SkColorSetRGB(228, 66, 80);
-constexpr SkColor kInk = SkColorSetRGB(35, 43, 57);
-constexpr SkColor kMuted = SkColorSetRGB(101, 113, 132);
+
+// The same Portal mark identifies a workspace and the titlebar overview.
+// Zero has no badge; the opaque badge remains legible in both color schemes.
+void PaintSpaceIcon(gfx::Canvas* canvas, gfx::Point origin, int number,
+                    SkColor ink, bool dark) {
+  const auto* logo = ui::ResourceBundle::GetSharedInstance().GetImageSkiaNamed(
+      IDR_AGENTIC_LOGO_MONO);
+  const auto scaled = gfx::ImageSkiaOperations::CreateResizedImage(
+      *logo, skia::ImageOperations::RESIZE_BEST, gfx::Size(20, 20));
+  canvas->DrawImageInt(gfx::ImageSkiaOperations::CreateColorMask(scaled, ink),
+                       origin.x(), origin.y());
+  if (!number)
+    return;
+  const SkColor badge_ink = dark ? SK_ColorWHITE : SK_ColorBLACK;
+  cc::PaintFlags flags;
+  flags.setAntiAlias(true);
+  flags.setColor(dark ? SK_ColorBLACK : SK_ColorWHITE);
+  const gfx::Point center(origin.x() + 17, origin.y() + 16);
+  canvas->DrawCircle(center, 6, flags);
+  flags.setStyle(cc::PaintFlags::kStroke_Style);
+  flags.setStrokeWidth(1);
+  flags.setColor(badge_ink);
+  canvas->DrawCircle(center, 6, flags);
+  canvas->DrawStringRectWithFlags(
+      number > 99 ? u"99+" : base::NumberToString16(number),
+      gfx::FontList().DeriveWithSizeDelta(number > 9 ? -5 : -4), badge_ink,
+      gfx::Rect(center.x() - 6, center.y() - 6, 12, 12),
+      gfx::Canvas::TEXT_ALIGN_CENTER);
+}
 
 bool InputBlocked(const AgenticSpacePresentation& space) {
   return space.owner == AgenticSpaceOwner::kAgent ||
@@ -240,13 +271,18 @@ class WorkspaceCard : public views::Button {
   void PaintButtonContents(gfx::Canvas* canvas) override {
     const auto font = gfx::FontList();
     const auto small = font.DeriveWithSizeDelta(-1);
+    const auto* colors = GetColorProvider();
+    const SkColor background = colors->GetColor(kColorToolbar);
+    const SkColor ink = colors->GetColor(kColorToolbarText);
+    const SkColor muted = SkColorSetA(ink, 180);
+    const bool dark = color_utils::IsDark(background);
     gfx::Rect frame(5, 5, width() - 10, height() - 64);
     if (frame.IsEmpty())
       return;
     canvas->Save();
     canvas->ClipPath(SkPath::RRect(SkRect::MakeXYWH(
         frame.x(), frame.y(), frame.width(), frame.height()), 12, 12), true);
-    canvas->FillRect(frame, SK_ColorWHITE);
+    canvas->FillRect(frame, background);
 
     // Render the entire workspace at one scale. Browser metadata and the
     // compositor page are composed locally; never capture the OS desktop.
@@ -256,7 +292,7 @@ class WorkspaceCard : public views::Button {
     canvas->Scale(static_cast<float>(frame.width()) / source_width,
                    static_cast<float>(frame.height()) / source_height);
     canvas->FillRect(gfx::Rect(0, 0, source_width, 80),
-                     SkColorSetRGB(235, 239, 245));
+                     colors->GetColor(kColorTabBackgroundInactiveFrameActive));
     const int count = static_cast<int>(space_.tabs.size());
     const int shown = std::min(count, std::max(1, (source_width - 90) / 140));
     // Keep the selected tab in view even when the Space has many tabs.
@@ -265,23 +301,23 @@ class WorkspaceCard : public views::Button {
     for (int i = 0; i < shown; ++i) {
       gfx::Rect tab(12 + i * tab_width, 5, tab_width - 4, 30);
       if (first + i == space_.selected_tab)
-        canvas->FillRect(tab, SK_ColorWHITE);
+        canvas->FillRect(tab, background);
       tab.Inset(gfx::Insets::VH(0, 10));
-      canvas->DrawStringRect(space_.tabs[first + i], font, kInk, tab);
+      canvas->DrawStringRect(space_.tabs[first + i], font, ink, tab);
     }
-    canvas->DrawStringRect(u"+", font, kMuted,
+    canvas->DrawStringRect(u"+", font, muted,
                            gfx::Rect(16 + shown * tab_width, 5, 30, 30));
-    canvas->DrawStringRect(u"‹   ›   ↻", font, kMuted, gfx::Rect(12, 43, 82, 26));
+    canvas->DrawStringRect(u"‹   ›   ↻", font, muted, gfx::Rect(12, 43, 82, 26));
     const gfx::Rect address(104, 43, source_width - 172, 27);
-    canvas->FillRect(address, SK_ColorWHITE);
+    canvas->FillRect(address, background);
     if (space_.contents) {
       gfx::Rect text = address;
       text.Inset(gfx::Insets::VH(0, 10));
       canvas->DrawStringRect(
           base::UTF8ToUTF16(space_.contents->GetLastCommittedURL().spec()),
-          font, kMuted, text);
+          font, muted, text);
     }
-    canvas->DrawStringRect(u"⋯", font, kMuted,
+    canvas->DrawStringRect(u"⋯", font, muted,
                            gfx::Rect(source_width - 50, 43, 30, 27));
     gfx::Rect page(0, 80, source_width, source_height - 80);
     const bool current_image = space_.contents && !image_.isNull() &&
@@ -294,7 +330,7 @@ class WorkspaceCard : public views::Button {
       canvas->DrawImageInt(image_, 0, 0, image_.width(), image_.height(),
                            page.x() + (page.width() - w) / 2, page.y(), w, h, true);
     } else {
-      canvas->DrawStringRect(AgenticText("waiting_frame"), font, kMuted, page);
+      canvas->DrawStringRect(AgenticText("waiting_frame"), font, muted, page);
     }
     if (HasGlow(space_))
       PaintAgentGlow(canvas, gfx::Rect(source_width, source_height),
@@ -306,14 +342,16 @@ class WorkspaceCard : public views::Button {
     border.setAntiAlias(true);
     border.setStrokeWidth(selected_ || HasFocus() ? 3 : 1);
     border.setColor(selected_ || HasFocus() ? GlowColor(space_)
-                                           : SkColorSetRGB(211, 216, 224));
+                                           : SkColorSetA(ink, 65));
     canvas->DrawRoundRect(frame, 12, border);
-    canvas->DrawStringRect(space_.name, font, kInk,
-                           gfx::Rect(8, height() - 53, width() - 65, 24));
-    canvas->DrawStringRect(AgenticText("pages", {base::NumberToString16(count)}), small, kMuted,
+    PaintSpaceIcon(canvas, gfx::Point(8, height() - 51), space_.number, ink, dark);
+    if (space_.number == 0)
+      canvas->DrawStringRect(AgenticText("main"), font, ink,
+                             gfx::Rect(36, height() - 53, width() - 93, 24));
+    canvas->DrawStringRect(AgenticText("pages", {base::NumberToString16(count)}), small, muted,
                            gfx::Rect(width() - 52, height() - 53, 48, 24));
     canvas->DrawStringRect(space_.status, small,
-                           HasGlow(space_) ? GlowColor(space_) : kMuted,
+                           HasGlow(space_) ? GlowColor(space_) : muted,
                            gfx::Rect(8, height() - 29, width() - 16, 22));
   }
 
@@ -343,7 +381,7 @@ class SpaceOverview : public views::AccessiblePaneView {
         close_(std::move(close)) {
     SetPaintToLayer();
     layer()->SetFillsBoundsOpaquely(true);
-    SetBackground(views::CreateSolidBackground(SkColorSetRGB(246, 248, 251)));
+    SetBackground(views::CreateSolidBackground(kColorToolbar));
     GetViewAccessibility().SetRole(ax::mojom::Role::kGroup);
     SetAccessibleName(AgenticText("overview"));
     title_ = AddChildView(std::make_unique<views::Label>());
@@ -351,10 +389,19 @@ class SpaceOverview : public views::AccessiblePaneView {
         AgenticText("legend")));
     keyboard_hint_ = AddChildView(std::make_unique<views::Label>(
         AgenticText("shortcuts")));
-    close_button_ = AddChildView(std::make_unique<views::MdTextButton>(
-        close_, AgenticText("back")));
+    close_button_ = AddChildView(std::make_unique<views::ImageButton>(close_));
+    close_button_->SetImageModel(views::Button::STATE_NORMAL,
+        ui::ImageModel::FromVectorIcon(vector_icons::kArrowBackIcon,
+                                      kColorToolbarButtonIcon, 20));
+    close_button_->SetAccessibleName(AgenticText("back"));
+    close_button_->SetTooltipText(AgenticText("back"));
+    close_button_->SetFocusBehavior(FocusBehavior::ALWAYS);
+    close_button_->SetImageHorizontalAlignment(views::ImageButton::ALIGN_CENTER);
+    close_button_->SetImageVerticalAlignment(views::ImageButton::ALIGN_MIDDLE);
+    close_button_->SetBackground(views::CreateRoundedRectBackground(
+        ui::kColorSysSurfaceVariant, 18));
     scroll_ = AddChildView(std::make_unique<views::ScrollView>());
-    scroll_->SetBackgroundColor(SkColorSetRGB(246, 248, 251));
+    scroll_->SetBackgroundColor(kColorToolbar);
     grid_ = scroll_->SetContents(std::make_unique<views::View>());
     create_button_ = grid_->AddChildView(std::make_unique<views::MdTextButton>(
         std::move(create), AgenticText("create")));
@@ -442,7 +489,7 @@ class SpaceOverview : public views::AccessiblePaneView {
   void OnBoundsChanged(const gfx::Rect&) override {
     // Keep clickable controls below Chromium's native draggable tab strip.
     title_->SetBounds(width() / 2 - 90, 56, 180, 32);
-    close_button_->SetBounds(width() - 172, 56, 148, 32);
+    close_button_->SetBounds(width() - 60, 54, 36, 36);
     hint_->SetBounds(24, 94, width() - 48, 24);
     keyboard_hint_->SetBounds(24, height() - 44, width() - 48, 28);
     scroll_->SetBounds(24, 138, std::max(1, width() - 48), std::max(1, height() - 192));
@@ -477,7 +524,7 @@ class SpaceOverview : public views::AccessiblePaneView {
   raw_ptr<views::Label> title_ = nullptr;
   raw_ptr<views::Label> hint_ = nullptr;
   raw_ptr<views::Label> keyboard_hint_ = nullptr;
-  raw_ptr<views::MdTextButton> close_button_ = nullptr;
+  raw_ptr<views::ImageButton> close_button_ = nullptr;
   raw_ptr<views::ScrollView> scroll_ = nullptr;
   raw_ptr<views::View> grid_ = nullptr;
   raw_ptr<views::MdTextButton> create_button_ = nullptr;
@@ -598,29 +645,8 @@ class SpaceOverviewButton : public views::Button {
     flags.setStyle(cc::PaintFlags::kStroke_Style);
     flags.setStrokeWidth(1.5f);
     const int middle = height() / 2;
-    const auto* logo = ui::ResourceBundle::GetSharedInstance().GetImageSkiaNamed(IDR_AGENTIC_LOGO_MONO);
-    const auto scaled = gfx::ImageSkiaOperations::CreateResizedImage(
-        *logo, skia::ImageOperations::RESIZE_BEST, gfx::Size(20, 20));
-    canvas->DrawImageInt(gfx::ImageSkiaOperations::CreateColorMask(scaled, ink),
-                         4, middle - 10);
-    if (count_ > 0) {
-      // Keep the Portal silhouette; the badge sits over the pointer corner.
-      const bool dark = color_utils::IsDark(
-          GetColorProvider()->GetColor(kColorToolbar));
-      const SkColor badge_ink = dark ? SK_ColorWHITE : SK_ColorBLACK;
-      const SkColor badge_fill = dark ? SK_ColorBLACK : SK_ColorWHITE;
-      flags.setStyle(cc::PaintFlags::kFill_Style);
-      flags.setColor(badge_fill);
-      canvas->DrawCircle(gfx::Point(21, middle + 6), 6, flags);
-      flags.setStyle(cc::PaintFlags::kStroke_Style);
-      flags.setStrokeWidth(1);
-      flags.setColor(badge_ink);
-      canvas->DrawCircle(gfx::Point(21, middle + 6), 6, flags);
-      const auto number = count_ > 99 ? u"99+" : base::NumberToString16(count_);
-      canvas->DrawStringRectWithFlags(number,
-          gfx::FontList().DeriveWithSizeDelta(count_ > 9 ? -5 : -4),
-          badge_ink, gfx::Rect(15, middle, 12, 12), gfx::Canvas::TEXT_ALIGN_CENTER);
-    }
+    PaintSpaceIcon(canvas, gfx::Point(4, middle - 10), count_, ink,
+        color_utils::IsDark(GetColorProvider()->GetColor(kColorToolbar)));
     flags.setStyle(cc::PaintFlags::kFill_Style);
     const std::array<SkColor, 3> colors = {kBlue, kGreen, kRed};
     for (size_t i = 0; i < active_.size(); ++i) {

@@ -1,0 +1,7 @@
+{
+  "name":"agentic-browser", "version":"0.1.0",
+  "description":"Agentic Browser task-space Skill and scoped MCP.",
+  "author":{"name":"The Agentic Browser Team"},
+  "homepage":"https://charlesxu.github.io/AgenticBrowser/",
+  "skills":"./skills/", "mcpServers":"./mcp.claude.json"
+}

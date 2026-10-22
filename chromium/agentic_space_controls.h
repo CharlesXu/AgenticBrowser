@@ -18,6 +18,7 @@ enum class AgenticSpaceOwner { kAvailable, kHuman, kAgent, kAwaitingResume, kRem
 // Native UI data only. Main Space is never exposed through the Agent API.
 struct AgenticSpacePresentation {
   int id = 0;
+  int number = 0;
   std::u16string name;
   std::u16string status;
   AgenticSpaceOwner owner = AgenticSpaceOwner::kAvailable;

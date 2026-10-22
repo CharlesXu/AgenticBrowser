@@ -54,7 +54,9 @@ try {
   const [a, b] = await Promise.all([connect(fileA), connect(fileB)]);
   const tools = await Promise.all([a.listTools(), b.listTools()]);
   const expectedTools = ['space_list', 'space_observe', 'space_claim', 'space_handoff', 'space_release',
-    'space_resume', 'space_navigate', 'space_click', 'space_type', 'space_scroll'].sort();
+    'space_resume', 'space_navigate', 'space_click', 'space_type', 'space_scroll',
+    'space_snapshot', 'space_screenshot', 'space_click_ref', 'space_fill', 'space_tabs',
+    'space_new_tab', 'space_select_tab', 'space_close_tab'].sort();
   for (const list of tools) {
     assert.deepEqual(list.tools.map(t => t.name).sort(), expectedTools);
     for (const tool of list.tools) {

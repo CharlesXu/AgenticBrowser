@@ -26,11 +26,14 @@ const privateAddress = /^(127\.|10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/;
 if (!isIPv4(host) || !privateAddress.test(host)) throw new Error('Use a loopback or explicit private LAN IPv4 address.');
 const requestedPort = Number(option('--port', '0'));
 if (!Number.isInteger(requestedPort) || requestedPort < 0 || requestedPort > 65535) throw new Error('Invalid --port');
-const discovery = JSON.parse(await readFile(resolve(profile, 'agentic-poc.json'), 'utf8'));
-if (!Number.isInteger(discovery.port) || typeof discovery.vnc?.['task-b'] !== 'string')
-  throw new Error('This browser does not provide the scoped Space B VNC capability.');
+const discoveryFile = resolve(option('--discovery', resolve(profile, 'agentic-poc.json'))!);
+let discovery = JSON.parse(await readFile(discoveryFile, 'utf8'));
+let selectedSpace = option('--space', Object.keys(discovery.vnc ?? {}).includes('task-b') ? 'task-b' : Object.keys(discovery.vnc ?? {})[0]);
+if (!Number.isInteger(discovery.port) || !selectedSpace || selectedSpace === 'main' || typeof discovery.vnc?.[selectedSpace] !== 'string')
+  throw new Error('This browser does not provide the requested non-main Space VNC capability.');
 const nativeEndpoint = `http://127.0.0.1:${discovery.port}/space`;
-const nativeToken = discovery.vnc['task-b'];
+let switching = false;
+let connecting = false;
 const viewerToken = randomBytes(32).toString('hex');
 const rfbPassword = randomBytes(6).toString('base64');
 const run = randomUUID();
@@ -70,10 +73,11 @@ class NativeError extends Error {
   status: number;
   constructor(status: number, reason: string) { super(reason); this.status = status; }
 }
-async function native(action: string, fields: Record<string, unknown> = {}) {
+async function native(action: string, fields: Record<string, unknown> = {}, space = selectedSpace!) {
+  if (space === 'main' || !discovery.vnc?.[space]) throw new NativeError(403, 'space_not_authorized');
   const response = await fetch(nativeEndpoint, {
-    method: 'POST', headers: { Authorization: `Bearer ${nativeToken}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ space: 'task-b', action, ...fields }), signal: AbortSignal.timeout(4000),
+    method: 'POST', headers: { Authorization: `Bearer ${discovery.vnc[space]}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ ...fields, space, action }), signal: AbortSignal.timeout(4000),
   });
   const data = await response.json();
   if (!response.ok) throw new NativeError(response.status, data.error ?? `native_${response.status}`);
@@ -95,6 +99,7 @@ function clearControl(session: Viewer) {
 function sessionState() {
   const connected = !!viewer?.nativeReady && !viewer.closed;
   return {
+    space: selectedSpace, name: nativeStatus.name, number: nativeStatus.number,
     connected, controlling: connected && !!viewer?.control,
     owner: nativeStatus.owner ?? 'unknown', viewers: nativeStatus.viewers ?? 0,
     width: 1280, height: 720, frames: frameCount, lastFrameTime,
@@ -163,10 +168,7 @@ lines.on('line', line => {
   }).finally(() => { queuedInputs--; });
 });
 
-async function capture() {
-  const started = Date.now();
-  try {
-    if (!stopping && viewer?.nativeReady && !viewer.closed) {
+async function sendFrame() {
       const frame = await native('frame') as Frame;
       if (frame.width !== 1280 || frame.height !== 720 || typeof frame.png !== 'string') throw new Error('Unexpected frame size');
       const png = Buffer.from(frame.png, 'base64');
@@ -186,6 +188,13 @@ async function capture() {
       frameCount++;
       lastFrameTime = Date.now();
       lastError = '';
+}
+
+async function capture() {
+  const started = Date.now();
+  try {
+    if (!stopping && viewer?.nativeReady && !viewer.closed) {
+      await enqueue(sendFrame);
     }
   } catch (error) {
     frameAck = undefined;
@@ -218,6 +227,50 @@ const server = createServer(async (req, res) => {
       res.writeHead(200, { 'Content-Type': 'text/javascript' }); res.end(script); return;
     }
     if (!sameSecret(req.headers.authorization?.replace(/^Bearer /, ''))) { json(403, { error: 'not_authorized' }); return; }
+    if (req.method === 'GET' && url.pathname === '/spaces') {
+      const fresh = JSON.parse(await readFile(discoveryFile, 'utf8'));
+      if (fresh.port !== discovery.port) throw new NativeError(409, 'browser_restarted');
+      discovery = fresh;
+      const spaces = [];
+      for (const id of Object.keys(discovery.vnc ?? {}).filter(id => id !== 'main')) {
+        try {
+          const state = await native('observe', {}, id);
+          const preview = await native('preview', {}, id).catch(() => ({}));
+          spaces.push({id, number:state.number, name:state.name, title:state.title,
+            owner:state.owner, png:preview.png});
+        } catch { /* A space may close while collecting the overview. */ }
+      }
+      json(200, {selected: selectedSpace, spaces}); return;
+    }
+    if (req.method === 'POST' && url.pathname === '/select') {
+      if (!requestAllowed(req, true)) { json(403, {error:'origin_required'}); return; }
+      if (viewer || connecting || switching) { json(409, {error:'disconnect_before_switching'}); return; }
+      switching = true;
+      try {
+        let body = '';
+        for await (const chunk of req) {
+          body += chunk;
+          if (body.length > 1024) throw new NativeError(400, 'invalid_request');
+        }
+        const id = JSON.parse(body).space;
+        if (typeof id !== 'string' || id === 'main' || !discovery.vnc?.[id])
+          throw new NativeError(403, 'space_not_authorized');
+        await enqueue(async () => {
+          if (streamStarted) await native('streamStop').catch(() => {});
+          streamStarted = false;
+          selectedSpace = id;
+          appliedFrame = undefined;
+          frameCount = 0;
+          lastFrameTime = 0;
+          await native('streamStart');
+          streamStarted = true;
+          nativeStatus = await native('observe');
+          lastError = '';
+        });
+        json(200, sessionState());
+      } finally { switching = false; }
+      return;
+    }
     if (req.method === 'GET' && url.pathname === '/credentials') { json(200, { password: rfbPassword }); return; }
     if (req.method === 'GET' && url.pathname === '/status') { json(200, sessionState()); return; }
     if (req.method !== 'POST' || !['/take', '/return'].includes(url.pathname)) { json(404, {}); return; }
@@ -255,14 +308,25 @@ const server = createServer(async (req, res) => {
   }
 });
 const websockets = new WebSocketServer({ noServer: true, maxPayload: 1024 * 1024, perMessageDeflate: false });
-server.on('upgrade', (req, socket, head) => {
+server.on('upgrade', async (req, socket, head) => {
   let url: URL;
   try { url = new URL(req.url!, origin); }
   catch { socket.destroy(); return; }
-  if (url.pathname !== '/rfb' || !requestAllowed(req, true) || !sameSecret(url.searchParams.get('token') ?? undefined) || viewer || stopping) {
+  if (url.pathname !== '/rfb' || !requestAllowed(req, true) || !sameSecret(url.searchParams.get('token') ?? undefined) || viewer || connecting || switching || stopping) {
     socket.end('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n'); return;
   }
+  connecting = true;
+  try {
+    // Seed RFB with the selected workspace before its first framebuffer update.
+    await enqueue(sendFrame);
+  } catch {
+    connecting = false;
+    socket.end('HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\n\r\n');
+    return;
+  }
+  if (socket.destroyed || stopping) { connecting = false; return; }
   websockets.handleUpgrade(req, socket, head, ws => {
+    connecting = false;
     const tcp = createConnection({ host: '127.0.0.1', port: rfbPort });
     tcp.setNoDelay(true);
     const session: Viewer = { ws, tcp, nativeReady: false, epoch: 0, closed: false };
@@ -309,15 +373,15 @@ try {
   await new Promise<void>((done, fail) => { server.once('error', fail); server.listen(requestedPort, host, done); });
   const port = (server.address() as { port: number }).port;
   origin = `http://${host}:${port}`;
-  await writeFile(connectionFile, JSON.stringify({ url: `${origin}/#${viewerToken}`, port, space: 'task-b' }) + '\n', { mode: 0o600 });
+  await writeFile(connectionFile, JSON.stringify({ url: `${origin}/#${viewerToken}`, port, space: selectedSpace }) + '\n', { mode: 0o600 });
   if (keepAwake) {
     awakeProcess = spawn('/usr/bin/caffeinate', ['-i', '-w', String(process.pid)], { stdio: 'ignore' });
     awakeProcess.on('error', () => { console.error('Could not keep this Mac awake'); void stop(); });
   }
-  console.log(JSON.stringify({ viewer: `${origin}/`, connectionFile, scope: 'Space B only; one RFB viewer; model disabled' }));
+  console.log(JSON.stringify({ viewer: `${origin}/`, connectionFile, scope: 'Non-main Spaces; one selected RFB viewer; model disabled' }));
   let polling = false;
   heartbeat = setInterval(async () => {
-    if (polling || stopping) return;
+    if (polling || stopping || switching) return;
     polling = true;
     try {
       await enqueue(async () => {

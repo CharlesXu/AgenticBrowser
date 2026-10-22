@@ -2,7 +2,7 @@
 <html lang="zh-CN">
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>空间 B · 远程观看</title>
+<title>Agentic Browser · noVNC</title>
 <style>
   *{box-sizing:border-box}body{margin:0;background:#111827;color:#f8fafc;font:15px system-ui,sans-serif;height:100dvh;display:flex;flex-direction:column}
   header{display:flex;align-items:center;gap:14px;padding:12px 18px;background:#1f2937;flex-wrap:wrap;border-bottom:2px solid #64748b}
@@ -11,9 +11,10 @@
   #screen{flex:1;min-height:0;overflow:hidden}#notice{padding:8px 18px;color:#cbd5e1;font-size:13px}#notice:empty{display:none}
   #keyboard-panel{padding:10px 18px;background:#1f2937}#keyboard-panel[hidden]{display:none}#keyboard-panel label{display:block;font-size:13px;margin-bottom:6px}
   #keyboard-text{display:block;width:100%;min-height:60px;margin-bottom:8px;padding:8px;font:16px system-ui;resize:none}#keyboard-panel button{margin-right:6px;min-height:44px}
+  #spaces{padding:18px;overflow:auto}#spaces[hidden]{display:none}#spaces h2{font-size:18px}#space-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:14px}#space-grid button{text-align:left;padding:10px;min-width:0;background:#1f2937;color:#f8fafc;border:2px solid transparent}#space-grid button.selected{border-color:#82a2ff}#space-grid img{display:block;width:100%;aspect-ratio:16/10;object-fit:contain;background:#111827;border-radius:6px}#space-grid .preview-empty{display:grid;place-items:center;aspect-ratio:16/10;background:#111827;border-radius:6px;color:#94a3b8}#space-grid span{display:block;padding-top:8px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}#space-grid small{color:#cbd5e1}#choose-space:disabled{opacity:.4}
 </style>
-<header id="bar"><strong data-i18n="space_b">空间 B</strong><span id="status" data-i18n="not_connected">尚未连接</span><button id="connect" data-i18n="connect">连接观看</button><button id="take" disabled data-i18n="take">接管</button><button id="keyboard" disabled aria-expanded="false" aria-controls="keyboard-panel" data-i18n="keyboard">键盘</button><button id="give" disabled data-i18n="give_control">交还控制权</button><button id="disconnect" disabled data-i18n="disconnect">断开</button></header>
-<div id="screen"></div><div id="notice"></div>
+<header id="bar"><strong id="space-name">Agentic Browser</strong><button id="choose-space" hidden data-i18n="choose_space">选择空间</button><span id="status" data-i18n="not_connected">尚未连接</span><button id="connect" data-i18n="connect">连接观看</button><button id="take" disabled data-i18n="take">接管</button><button id="keyboard" disabled aria-expanded="false" aria-controls="keyboard-panel" data-i18n="keyboard">键盘</button><button id="give" disabled data-i18n="give_control">交还控制权</button><button id="disconnect" disabled data-i18n="disconnect">断开</button></header>
+<section id="spaces" hidden><h2 data-i18n="choose_space">选择空间</h2><div id="space-grid"></div></section><div id="screen"></div><div id="notice"></div>
 <section id="keyboard-panel" hidden><label for="keyboard-text" data-i18n="keyboard_help">先点远程输入框，再在这里输入文字并发送（最多 256 字符）</label><textarea id="keyboard-text" rows="2" maxlength="256" autocomplete="off" autocapitalize="off" spellcheck="false"></textarea><button id="send-text" data-i18n="send_text">发送文字</button><button id="backspace" data-i18n="backspace">退格</button><button id="enter" data-i18n="enter">回车</button></section>
 <script type="module">
 /*AGENTIC_LOCALES*/
@@ -61,14 +62,16 @@ $('send-text').onclick = async () => {
 for (const [id, keysym] of [['backspace',0xff08],['enter',0xff0d]]) $(id).onclick = () => {
   if (canType() && !composing && !sending) rfb.sendKey(keysym, null);
 };
-async function api(path, method = 'GET') {
-  const response = await fetch(path, {method,headers:{Authorization:`Bearer ${token}`},cache:'no-store'});
+async function api(path, method = 'GET', body) {
+  const response = await fetch(path, {method,headers:{Authorization:`Bearer ${token}`, 'Content-Type':'application/json'},body:body === undefined ? undefined : JSON.stringify(body),cache:'no-store'});
   const data = await response.json();
   if (!response.ok) throw new Error(data.error || t("request_failed"));
   return data;
 }
 function update(state) {
   const controlling = connected && state.connected && state.controlling;
+  if (state.number) $('space-name').textContent = t('space_number').replace('$1', state.number);
+  $('choose-space').disabled = !!rfb || connecting;
   $('bar').className = connected && state.connected ? controlling ? 'controlling' : 'viewing' : '';
   $('status').textContent = !connected ? t("not_connected") : !state.connected ? t("confirming") : controlling ? t("you_remote") : t("view_only");
   $('take').disabled = !connected || !state.connected || controlling || requestInFlight;
@@ -91,10 +94,11 @@ $('connect').onclick = async () => {
   let credentials;
   try { credentials = await api('/credentials'); }
   catch (error) { connecting = false; $('connect').disabled = false; $('notice').textContent = error.message; return; }
+  $('spaces').hidden = true;
   rfb = new RFB($('screen'), `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/rfb?token=${encodeURIComponent(token)}`, { credentials });
   rfb.scaleViewport = true; rfb.resizeSession = false; rfb.viewOnly = true;
   rfb.addEventListener('connect', () => { connected = true; connecting = false; void refresh(); timer = setInterval(refresh, 500); });
-  rfb.addEventListener('disconnect', () => { connected = false; connecting = false; clearInterval(timer); rfb = undefined; update({}); });
+  rfb.addEventListener('disconnect', () => { connected = false; connecting = false; clearInterval(timer); rfb = undefined; update({}); void loadSpaces(); });
   rfb.addEventListener('securityfailure', () => { $('notice').textContent = t("auth_failed"); });
   update({});
 };
@@ -107,6 +111,43 @@ for (const [id, path] of [['take','/take'],['give','/return']]) $(id).onclick = 
 };
 $('disconnect').onclick = () => { closeKeyboard(); rfb?.disconnect(); };
 window.addEventListener('pagehide', () => rfb?.disconnect());
+async function loadSpaces(show = false) {
+  if (!token || rfb || connecting) return;
+  try {
+    const data = await api('/spaces');
+    const grid = $('space-grid'); grid.replaceChildren();
+    $('choose-space').hidden = data.spaces.length < 2;
+    $('connect').disabled = !data.spaces.some(s => s.id === data.selected);
+    $('spaces').hidden = !show && data.spaces.length < 2;
+    for (const space of data.spaces) {
+      const button = document.createElement('button');
+      button.className = space.id === data.selected ? 'selected' : '';
+      const label = t('space_number').replace('$1', space.number);
+      button.setAttribute('aria-label', label);
+      if (space.png) {
+        const image = document.createElement('img'); image.alt = label;
+        image.src = 'data:image/png;base64,' + space.png; button.append(image);
+      } else {
+        const empty = document.createElement('div'); empty.className = 'preview-empty';
+        empty.textContent = t('waiting_frame'); button.append(empty);
+      }
+      const title = document.createElement('span'); title.textContent = label; button.append(title);
+      const detail = document.createElement('small'); detail.textContent = space.title || t('new_tab'); button.append(detail);
+      button.onclick = async () => {
+        button.disabled = true; $('connect').disabled = true;
+        try {
+          const state = await api('/select', 'POST', {space:space.id});
+          update(state); $('spaces').hidden = true;
+        } catch (error) { $('notice').textContent = error.message; $('connect').disabled = !data.spaces.some(s => s.id === data.selected); }
+        finally { button.disabled = false; }
+      };
+      grid.append(button);
+      if (space.id === data.selected) $('space-name').textContent = label;
+    }
+  } catch (error) { $('notice').textContent = error.message; }
+}
+$('choose-space').onclick = () => { void loadSpaces(true); };
 if (!token) $('notice').textContent = t("full_link");
+else void loadSpaces();
 </script>
 </html>

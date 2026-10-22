@@ -20,7 +20,11 @@
     "mcp:verify": "node scripts/verify-mcp.mjs",
     "vnc": "node src/vnc.ts",
     "vnc:prepare": "bash scripts/prepare-vnc.sh",
-    "vnc:build": "bash scripts/build-vnc.sh"
+    "vnc:build": "bash scripts/build-vnc.sh",
+    "check": "node scripts/check-project.mjs",
+    "integration:pack": "node scripts/package-integration.mjs",
+    "space:bind": "node scripts/bind-space.mjs",
+    "site:releases": "node scripts/update-site-releases.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/client": "2.3.1",

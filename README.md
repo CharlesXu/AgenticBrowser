@@ -1,6 +1,6 @@
 # Agentic Browser 第一阶段 PoC
 
-依据 [项目方案](项目方案.md) 推进。2026-10-22 已完成 macOS arm64 的 Chromium 原生构建、同窗口三个独立 Space、共享登录态和本机交接。本轮加入单 Space MCP 与 B 的一路 VNC，颜色由真实观看／控制状态驱动。MCP 实际冒烟已通过；VNC、界面、坐标及 Mac 锁屏的最终验收结果见 [实施记录](第一阶段实施记录.md)。模型按用户要求延后，完整第一阶段尚未验收。
+macOS ARM64 原生 Chromium 开发构建；共享登录态的多空间、主空间仅人操作、18 个受空间凭证约束的 MCP 工具，以及可选择非主空间的单路 noVNC。模型尚未接入。当前界面、Harness 接入、产品站点和 CI/CD 见 [接入与发布](docs/接入与发布.md)，实际验证记录见 [实施记录](第一阶段实施记录.md)。目前没有公开浏览器安装包。
 
 ## 当前运行方式
 
@@ -55,7 +55,7 @@ npm run extension:prepare
 npm run spaces:verify -- --extension
 ```
 
-普通启动、新窗口及其他常规 Profile 均自动带有空间；`--spaces` 启动器另提供本地测试页面与 MCP/VNC 连接文件。标题栏右上角点击 **空间入口**（或 `⌥S`）打开同窗口总览，点击卡片进入主 Space、A 或 B；每个 Space 有自己的标签集合、当前标签和控制权，共用一个 Profile。总览中可用 `←` / `→` 或再次按 `⌥S` 选择工作区，`Enter` 进入；`Esc` 或“返回工作区”关闭总览。
+普通启动、新窗口及其他常规 Profile 均自动带有空间；`--spaces` 启动器另提供本地测试页面与 MCP/VNC 连接文件。标题栏右上角点击 **空间入口**（或 `⌥S`）打开同窗口总览，点击卡片进入主空间或按活动顺序编号的任务空间；每个 Space 有自己的标签集合、当前标签和控制权，共用一个 Profile。总览中可用 `←` / `→` 或再次按 `⌥S` 选择工作区，`Enter` 进入；`Esc` 或右上角返回箭头关闭总览。
 
 总览将标签栏、地址栏和真实页面画面按整个工作区的比例缩小，不再把标签栏放大成卡片标题。卡片下显示 Space 名称、页数和操作者；标签较多时保留当前标签可见。画面来自该 Space 选中页的 Chromium 合成输出，打开总览期间每秒更新，关闭后停止捕获。这是浏览器内的工作区合成预览，不是操作系统整窗截图；暂不包含扩展弹窗等独立浮层。
 
@@ -67,7 +67,7 @@ Agent 控制时，总览卡片和展开后的整个工作区均显示蓝色渐�
 
 原生归属与控制代码在 `chromium/agentic_poc.cc`，界面在 `chromium/agentic_space_controls.cc`，`scripts/apply-chromium-poc.mjs` 将其加入固定版本源码，通过可审查的上游补丁挂接。构建脚本自动应用；遇到版本不符或覆盖文件不同会停止，不回滚已有改动。
 
-每次运行在独立测试 Profile 内生成仅当前用户可读的 `agentic-poc.json`，含随机端口、任务凭证及 B 专用 VNC 凭证；启动器另生成 `task-a.json`、`task-b.json` 供各 MCP 实例使用。普通启动按窗口保存到实际 Profile 下的 `agentic-poc-<窗口ID>.json`；每个窗口独立端口和凭证，默认 A/B 从空白页开始。它们属于运行时秘密，不应打印或复制到聊天、日志、证据。原生接口为 `POST http://127.0.0.1:<port>/space`；任务凭证支持 `observe`、`claim`、`release`、`handOff`、`resume`、`navigate`、`click`、`type`、`scroll`，VNC 凭证另限于 B 的画面、观看和远端控制动作。
+每次运行在独立测试 Profile 内生成仅当前用户可读的 `agentic-poc.json`，含随机端口、任务凭证及各非主空间的 VNC 凭证；启动器另生成 `task-a.json`、`task-b.json` 供各 MCP 实例使用。普通启动按窗口保存到实际 Profile 下的 `agentic-poc-<窗口ID>.json`；每个窗口独立端口和凭证，默认 A/B 从空白页开始。它们属于运行时秘密，不应打印或复制到聊天、日志、证据。原生接口为 `POST http://127.0.0.1:<port>/space`；任务凭证支持 `observe`、`claim`、`release`、`handOff`、`resume`、`navigate`、`click`、`type`、`scroll`，VNC 凭证分别限于所属非主空间的画面、观看和远端控制动作。
 
 修改页面前先 `claim`，将返回的 `lease`、`generation` 和 `observe` 返回的 `tab` 带入后续动作。重新取得控制权后旧代次失效。导航仅允许 HTTP/HTTPS；点击和滚动坐标为视口 CSS 像素。响应中的 `dispatched` 只表示动作已派发，效果以页面实际结果为准；例如先观察到点击使输入框获得页面内焦点，再输入文本。MCP 只操作该 Space 的选中页，不开放任意脚本执行或全局标签管理；画面由独立授权的 VNC 链路读取。
 
@@ -92,7 +92,7 @@ npm run mcp -- --connection "/测试Profile路径/task-a.json"
 npm run mcp -- --connection "/测试Profile路径/task-b.json"
 ```
 
-Harness 配置应直接启动 `node /项目绝对路径/src/mcp.ts --connection /连接文件绝对路径`，避免 npm 启动提示混入 stdio 协议；本项目不自动修改全局 Harness 配置。MCP 提供 10 个工具：`space_list`、`space_observe`、`space_claim`、`space_release`、`space_handoff`、`space_resume`、`space_navigate`、`space_click`、`space_type`、`space_scroll`。单进程只能操作其连接文件授权的 A 或 B，不能通过工具参数指定其他 Space。用法见 [项目 Skill](skills/agentic-browser/SKILL.md)。
+Harness 配置应直接启动 `node /项目绝对路径/src/mcp.ts --connection /连接文件绝对路径`，避免 npm 启动提示混入 stdio 协议；本项目不自动修改全局 Harness 配置。MCP 提供 18 个工具，控制与坐标工具为：`space_list`、`space_observe`、`space_claim`、`space_release`、`space_handoff`、`space_resume`、`space_navigate`、`space_click`、`space_type`、`space_scroll`。另有 `space_snapshot`、`space_screenshot`、`space_click_ref`、`space_fill`、`space_tabs`、`space_new_tab`、`space_select_tab`、`space_close_tab`。单进程只能操作其连接文件授权的一个非主空间，不能通过工具参数指定其他 Space。用法见 [项目 Skill](skills/agentic-browser/SKILL.md)。
 
 VNC 本地依赖和启动：
 
@@ -107,7 +107,7 @@ npm run vnc -- --profile "/测试Profile路径" --keep-awake
 
 服务默认只监听 `127.0.0.1`。局域网试用时显式追加 `--listen <本机私有IPv4>`，不支持公网地址或 `0.0.0.0`。在本地读取 Profile 中权限为 0600 的 `vnc-session.json`，打开其中的 `url`；它含临时观看凭证，不要打印或发到聊天／日志。当前是可信局域网 PoC 的 HTTP/WS 与 VNC 会话认证，没有生产用 TLS、设备配对或云中继。
 
-一期仅开放 **B 的一路 RFB 流、一个观看客户端**。noVNC 连接默认只观看，显式点“接管”后才允许输入，点“交还”或断开后撤销远端操作权。原 Harness 仍须 `resume` 并携带新控制权重新 `observe`。主 Space 不开放画面或控制接口。
+当前开放 **所有非主空间中的一路 RFB 流、一个观看客户端**；连接页提供缩略图选择，切换前先断开。noVNC 连接默认只观看，显式点“接管”后才允许输入，点“交还”或断开后撤销远端操作权。原 Harness 仍须 `resume` 并携带新控制权重新 `observe`。主 Space 不开放画面或控制接口。
 
 手机输入：接管后先点远程页面的输入框，再点顶部“键盘”，在本地输入区用手机输入法编辑，点“发送文字”；支持中文、表情和换行，每次最多 256 字符，另有退格与回车。画布点击本身不会自动弹出手机输入法。交还、断开或失去控制权时收起输入区并停止尚未发出的文字。真实文字传输已验证，用户已在 iPhone 确认输入法弹出、中文组词和发送均正常，见 [手机输入验收](evidence/vnc-mobile-keyboard-20261022.json)。
 
@@ -129,7 +129,7 @@ npm run mcp:verify -- "/测试Profile路径/task-a.json" "/测试Profile路径/t
 - 已验证：同一浏览器实例和 Profile、共享 Cookie/LocalStorage/IndexedDB/退出状态、独立 sessionStorage、任务 A/B 输入不串 Space、主 Space 与错误归属拒绝、重复占用和旧控制权拒绝、后台任务不切换可见 Space。
 - 此前解锁后补验通过：空 Space 补页归属，以及交还后只有当前 lease/代次的观察能允许后续动作。见 [两项回归结果](evidence/space-regression-20261022.json)。本轮 UI 改造后再次通过基础检查及一次完整本机交接。
 - 并行补验：用户已确认观察 A/B 时无串台或抢焦点，以及主 Space 连续输入正常；另以 Computer Use 原生输入补齐 60 秒与两个真实 MCP 客户端同时运行的记录，A/B 各 67 轮、文字完整、无串台。真人确认和工具补测分别保留，见 [完整时间段补测](evidence/native-ui-parallel-final-20261022.json)。扩展样例已修复并通过首次无刷新开关验收。
-- 工作区基本管理已补齐：总览显示稳定编号，提供“＋ 新建工作区”和卡片“×”关闭；主 Space 保留，Agent／远端使用中的工作区禁止直接关闭。返回按钮移出标题栏拖动区。新增与关闭已通过 Computer Use；[本轮记录](evidence/space-lifecycle-20261022.json)。启动仍为主/A/B，新增区暂不增加默认 MCP/VNC 接线或跨启动恢复。
+- 工作区基本管理已补齐：总览显示稳定编号，提供“＋ 新建工作区”和卡片“×”关闭；主 Space 保留，Agent／远端使用中的工作区禁止直接关闭。返回按钮移出标题栏拖动区。新增与关闭已通过 Computer Use；[本轮记录](evidence/space-lifecycle-20261022.json)。启动仍为主/A/B，新增区支持私有 MCP 绑定和 VNC 选择；尚不支持跨启动恢复空间布局。
 - Space 入口已改到工具栏右上角，显示工作区总数和蓝／绿／红状态点；悬停查看各 Space 的控制状态。增量构建、数量显示与总览切换已检查；Computer Use 已验证蓝+绿、远程接管后的蓝+红、交还后的蓝+绿及断开后的空闲状态，见 [状态点记录](evidence/toolbar-status-dots-20261022.json)。
 - MCP：两个实际 stdio 客户端的初始化、工具发现、独立导航、权限拒绝、旧租约及正常关闭释放均通过，见 [MCP 记录](evidence/mcp-20261022.json)。
 - VNC：本机 noVNC／RFB 的观看、接管、交还及重连已验证；Computer Use 验证红色远程控制、绿色本机接管与交还原 Agent。[最终构建的坐标与边界检查](evidence/vnc-mapping-boundary-final-20261022.json)各坐标轴最大误差为 0.668 CSS px，边缘松开无按键粘连。解锁后 [125% 缩放检查](evidence/vnc-mapping-125-20261022.json)四个目标均命中，各坐标轴最大误差 1.10 CSS px；[实际改变缩放](evidence/vnc-zoom-revocation-20261022.json)会撤销旧远程控制，重新接管后恢复操作。[局域网 iPhone 实测](evidence/lan-acceptance-20261022.json)已完成三轮接管／交还、原 MCP 恢复和重连仅观看；最终 20／20 次有效，P50 115 ms、P95 143 ms、最大 144 ms，达到本次粗测 P95 ≤ 200 ms 目标。临时服务已关闭，模型未接入。
@@ -154,7 +154,7 @@ npm run mcp:verify -- "/测试Profile路径/task-a.json" "/测试Profile路径/t
 
 标题栏入口始终显示选定 Portal 图标的单色缩小版，不计算主空间；有任务空间时，箭头位置覆盖圆形数字角标，零任务空间时不显示角标。浅色模式为黑边、白底、黑字，深色模式反之；单色图标随主题改变颜色。状态点上蓝、中绿、下红，靠近图标；Tab 卡片不显示空间标记。中文产品术语用“空间”，英文用 Space；新增文案统一位于 `locales/en-US.json` 与 `locales/zh-CN.json`，原生界面按浏览器语言，noVNC 按客户端语言选择。其他语言暂回退英文。
 
-应用、设置、地址栏和默认浏览器提示采用 Portal 品牌；关于页的产品版权归属显示 The Agentic Browser Team；Chromium 内核版本、上游源码版权、LICENSE 及开源链接保留。图标母版在 `assets/branding/`。首页及新 Profile 默认启动地址为 [项目站点](https://charlesxu.github.io/AgenticBrowser/)，网站部署和下载页尚未实施，不改用户已保存的首页/启动设置。浏览器自身更新以后接 GitHub Releases；本期不接更新下载或安装功能。
+应用、设置、地址栏和默认浏览器提示采用 Portal 品牌；关于页的产品版权归属显示 The Agentic Browser Team；Chromium 内核版本、上游源码版权、LICENSE 及开源链接保留。图标母版在 `assets/branding/`。首页及新 Profile 默认启动地址为 [项目站点](https://charlesxu.github.io/AgenticBrowser/)，站点与下载清单代码已实现；下载只在真实公开安装包发布后启用，不改用户已保存的首页/启动设置。浏览器自身更新以后接 GitHub Releases；本期不接更新下载或安装功能。
 
 MCP 的 `space_handoff` 主动将当前空间交给人；原 Agent 保留旧 lease 作为身份证明，在人交还后 `space_resume` 并重新观察。`agentic-browser://guide` 返回与适配器一起发布的当前 Skill。参考 Ego 的任务连续性和交接方式，没有引入其完整 SDK 或扩大 PoC 权限。
 
