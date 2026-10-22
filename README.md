@@ -55,7 +55,7 @@ npm run extension:prepare
 npm run spaces:verify -- --extension
 ```
 
-`--spaces` 启用浏览器内的 `agentic-poc` 模块。标题栏右上角点击 **空间入口**（或 `⌥S`）打开同窗口总览，点击卡片进入主 Space、A 或 B；每个 Space 有自己的标签集合、当前标签和控制权，共用一个 Profile。总览中可用 `←` / `→` 或再次按 `⌥S` 选择工作区，`Enter` 进入；`Esc` 或“返回工作区”关闭总览。
+普通启动、新窗口及其他常规 Profile 均自动带有空间；`--spaces` 启动器另提供本地测试页面与 MCP/VNC 连接文件。标题栏右上角点击 **空间入口**（或 `⌥S`）打开同窗口总览，点击卡片进入主 Space、A 或 B；每个 Space 有自己的标签集合、当前标签和控制权，共用一个 Profile。总览中可用 `←` / `→` 或再次按 `⌥S` 选择工作区，`Enter` 进入；`Esc` 或“返回工作区”关闭总览。
 
 总览将标签栏、地址栏和真实页面画面按整个工作区的比例缩小，不再把标签栏放大成卡片标题。卡片下显示 Space 名称、页数和操作者；标签较多时保留当前标签可见。画面来自该 Space 选中页的 Chromium 合成输出，打开总览期间每秒更新，关闭后停止捕获。这是浏览器内的工作区合成预览，不是操作系统整窗截图；暂不包含扩展弹窗等独立浮层。
 
@@ -67,7 +67,7 @@ Agent 控制时，总览卡片和展开后的整个工作区均显示蓝色渐�
 
 原生归属与控制代码在 `chromium/agentic_poc.cc`，界面在 `chromium/agentic_space_controls.cc`，`scripts/apply-chromium-poc.mjs` 将其加入固定版本源码，通过可审查的上游补丁挂接。构建脚本自动应用；遇到版本不符或覆盖文件不同会停止，不回滚已有改动。
 
-每次运行在独立测试 Profile 内生成仅当前用户可读的 `agentic-poc.json`，含随机端口、任务凭证及 B 专用 VNC 凭证；启动器另生成 `task-a.json`、`task-b.json` 供各 MCP 实例使用。它们属于运行时秘密，不应打印或复制到聊天、日志、证据。原生接口为 `POST http://127.0.0.1:<port>/space`；任务凭证支持 `observe`、`claim`、`release`、`handOff`、`resume`、`navigate`、`click`、`type`、`scroll`，VNC 凭证另限于 B 的画面、观看和远端控制动作。
+每次运行在独立测试 Profile 内生成仅当前用户可读的 `agentic-poc.json`，含随机端口、任务凭证及 B 专用 VNC 凭证；启动器另生成 `task-a.json`、`task-b.json` 供各 MCP 实例使用。普通启动按窗口保存到实际 Profile 下的 `agentic-poc-<窗口ID>.json`；每个窗口独立端口和凭证，默认 A/B 从空白页开始。它们属于运行时秘密，不应打印或复制到聊天、日志、证据。原生接口为 `POST http://127.0.0.1:<port>/space`；任务凭证支持 `observe`、`claim`、`release`、`handOff`、`resume`、`navigate`、`click`、`type`、`scroll`，VNC 凭证另限于 B 的画面、观看和远端控制动作。
 
 修改页面前先 `claim`，将返回的 `lease`、`generation` 和 `observe` 返回的 `tab` 带入后续动作。重新取得控制权后旧代次失效。导航仅允许 HTTP/HTTPS；点击和滚动坐标为视口 CSS 像素。响应中的 `dispatched` 只表示动作已派发，效果以页面实际结果为准；例如先观察到点击使输入框获得页面内焦点，再输入文本。MCP 只操作该 Space 的选中页，不开放任意脚本执行或全局标签管理；画面由独立授权的 VNC 链路读取。
 
@@ -152,7 +152,7 @@ npm run mcp:verify -- "/测试Profile路径/task-a.json" "/测试Profile路径/t
 
 应用名为 **Agentic Browser**；产品版本由 `package.json` 管理，关于页显示产品版本、实际 Git commit 的前 16 个十六进制字符（8 字节）和进程架构，下一行显示 Chromium 内核版本。未提交源码会额外标识 `+modified`，没有提交时显示 `uncommitted`。不伪装正式发行或最新版本。
 
-标题栏入口不计算主空间；有任务空间时数字叠在图标内，零空间时显示选定 Portal 图标的单色缩小版。状态点上蓝、中绿、下红，靠近图标；Tab 卡片不显示空间标记。中文产品术语用“空间”，英文用 Space；新增文案统一位于 `locales/en-US.json` 与 `locales/zh-CN.json`，原生界面按浏览器语言，noVNC 按客户端语言选择。其他语言暂回退英文。
+标题栏入口始终显示选定 Portal 图标的单色缩小版，不计算主空间；有任务空间时，箭头位置覆盖圆形数字角标，零任务空间时不显示角标。浅色模式为黑边、白底、黑字，深色模式反之；单色图标随主题改变颜色。状态点上蓝、中绿、下红，靠近图标；Tab 卡片不显示空间标记。中文产品术语用“空间”，英文用 Space；新增文案统一位于 `locales/en-US.json` 与 `locales/zh-CN.json`，原生界面按浏览器语言，noVNC 按客户端语言选择。其他语言暂回退英文。
 
 应用、设置、地址栏和默认浏览器提示采用 Portal 品牌；关于页的产品版权归属显示 The Agentic Browser Team；Chromium 内核版本、上游源码版权、LICENSE 及开源链接保留。图标母版在 `assets/branding/`。首页及新 Profile 默认启动地址为 [项目站点](https://charlesxu.github.io/AgenticBrowser/)，网站部署和下载页尚未实施，不改用户已保存的首页/启动设置。浏览器自身更新以后接 GitHub Releases；本期不接更新下载或安装功能。
 

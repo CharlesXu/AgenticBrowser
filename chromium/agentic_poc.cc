@@ -21,6 +21,7 @@
 #include "base/json/json_reader.h"
 #include "base/json/json_writer.h"
 #include "base/memory/weak_ptr.h"
+#include "base/scoped_observation.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/task/bind_post_task.h"
 #include "base/task/sequenced_task_runner.h"
@@ -33,6 +34,7 @@
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/browser_tabstrip.h"
 #include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
+#include "chrome/browser/ui/browser_window/public/browser_collection_observer.h"
 #include "chrome/browser/ui/tabs/tab_group_model.h"
 #include "components/tabs/public/tab_group.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
@@ -133,16 +135,16 @@ class LocalServer : public net::HttpServer::Delegate {
     static constexpr auto annotation =
         net::DefineNetworkTrafficAnnotation("agentic_poc_local_control", R"(
         semantics {
-          sender: "AgenticBrowser PoC"
-          description: "Replies to explicitly enabled local task Space control."
+          sender: "Agentic Browser"
+          description: "Replies to authenticated local task Space control."
           trigger: "Local authenticated helper requests an operation."
           data: "Task page metadata and operation result."
           destination: LOCAL
         }
         policy {
           cookies_allowed: NO
-          setting: "Only enabled with the agentic-poc command line flag."
-          policy_exception_justification: "Local opt-in development PoC."
+          setting: "Local per-window capabilities; main Space is not accessible."
+          policy_exception_justification: "Local authenticated development PoC."
         })");
     net::HttpServerResponseInfo response(
         static_cast<net::HttpStatusCode>(status));
@@ -323,37 +325,19 @@ class TaskSpace : public content::DevToolsAgentHostClient {
   int sequence_ = 0;
 };
 
-class PocParts : public ChromeBrowserMainExtraParts,
-                 public TabStripModelObserver {
+class PocParts : public TabStripModelObserver {
  public:
   PocParts() {
     for (const char* name : {"main", "task-a", "task-b"})
       spaces_.push_back(std::make_unique<TaskSpace>(name));
   }
-  void PreEarlyInitialization() override {
+  ~PocParts() override { Shutdown(); }
+  void Initialize(BrowserWindowInterface* main, base::FilePath discovery,
+                  scoped_refptr<base::SingleThreadTaskRunner> io_runner) {
     const auto* command = base::CommandLine::ForCurrentProcess();
-    // No public/raw CDP endpoint is permitted in this mode.
-    CHECK(!command->HasSwitch("remote-debugging-port"));
-    CHECK(!command->HasSwitch("remote-debugging-pipe"));
-  }
-  void PostBrowserStart() override {
-    const auto* command = base::CommandLine::ForCurrentProcess();
-    const auto profile_dir = command->GetSwitchValuePath("user-data-dir");
-    CHECK(!profile_dir.empty());
-    discovery_ = profile_dir.AppendASCII("agentic-poc.json");
+    discovery_ = std::move(discovery);
     files_ = base::ThreadPool::CreateSequencedTaskRunner(
         {base::MayBlock(), base::TaskShutdownBehavior::BLOCK_SHUTDOWN});
-    BrowserWindowInterface* main = nullptr;
-    GlobalBrowserCollection::GetInstance()->ForEach(
-        [&](BrowserWindowInterface* browser) {
-          if (browser->GetType() == BrowserWindowInterface::TYPE_NORMAL &&
-              !browser->GetProfile()->IsOffTheRecord()) {
-            main = browser;
-            return false;
-          }
-          return true;
-        });
-    CHECK(main);
     CHECK(base::FeatureList::IsEnabled(features::kTabGroupsFocusing));
     browser_ = main->GetWeakPtr();
     auto* model = main->GetTabStripModel();
@@ -366,9 +350,10 @@ class PocParts : public ChromeBrowserMainExtraParts,
     spaces_[0]->selected = model->GetActiveWebContents()->GetWeakPtr();
     spaces_[0]->human = true;
     for (size_t i = 1; i < spaces_.size(); ++i) {
-      const GURL url(command->GetSwitchValueASCII("agentic-poc-" +
-                                                  spaces_[i]->name + "-url"));
-      CHECK(url.SchemeIsHTTPOrHTTPS());
+      const std::string supplied = command->GetSwitchValueASCII(
+          "agentic-poc-" + spaces_[i]->name + "-url");
+      const GURL url(supplied.empty() ? "about:blank" : supplied);
+      CHECK(supplied.empty() || url.SchemeIsHTTPOrHTTPS());
       auto* tab = chrome::AddAndReturnTabAt(main, url, -1, false);
       spaces_[i]->members.push_back(tab->GetWeakPtr());
       spaces_[i]->selected = tab->GetWeakPtr();
@@ -379,11 +364,8 @@ class PocParts : public ChromeBrowserMainExtraParts,
     closed_ = main->RegisterBrowserDidClose(
         base::BindRepeating(&PocParts::BrowserClosed, weak_.GetWeakPtr()));
     Reconcile();
-    base::Thread::Options options;
-    options.message_pump_type = base::MessagePumpType::IO;
-    CHECK(io_.StartWithOptions(std::move(options)));
     server_ = base::SequenceBound<LocalServer>(
-        io_.task_runner(),
+        std::move(io_runner),
         base::BindPostTask(
             base::SingleThreadTaskRunner::GetCurrentDefault(),
             base::BindRepeating(&PocParts::Handle, weak_.GetWeakPtr())));
@@ -392,7 +374,7 @@ class PocParts : public ChromeBrowserMainExtraParts,
             base::SingleThreadTaskRunner::GetCurrentDefault(),
             base::BindOnce(&PocParts::ServerReady, weak_.GetWeakPtr())));
   }
-  void PostMainMessageLoopRun() override {
+  void Shutdown() {
     remote_timer_.Stop();
     weak_.InvalidateWeakPtrs();
     for (auto& space : spaces_) {
@@ -407,7 +389,6 @@ class PocParts : public ChromeBrowserMainExtraParts,
     }
     if (!server_.is_null()) {
       server_.Reset();
-      io_.Stop();
     }
     // This file only contains ephemeral capabilities for this run.
     if (files_) {
@@ -1320,13 +1301,88 @@ class PocParts : public ChromeBrowserMainExtraParts,
   base::FilePath discovery_;
   scoped_refptr<base::SequencedTaskRunner> files_;
   int port_ = 0;
-  base::Thread io_{"AgenticPoCIO"};
   base::SequenceBound<LocalServer> server_;
   base::RepeatingTimer remote_timer_;
   base::WeakPtrFactory<PocParts> weak_{this};
 };
+// Each normal window owns its spaces and capabilities. Profiles never share
+// controllers or tokens; their existing Chromium storage isolation is retained.
+class AgenticBrowserParts : public ChromeBrowserMainExtraParts,
+                            public BrowserCollectionObserver {
+ public:
+  void PreEarlyInitialization() override {
+    auto* command = base::CommandLine::ForCurrentProcess();
+    explicit_poc_ = command->HasSwitch("agentic-poc");
+    // Keep the existing native tab-decoration hooks enabled on direct launches.
+    command->AppendSwitch("agentic-poc");
+    CHECK(!command->HasSwitch("remote-debugging-port"));
+    CHECK(!command->HasSwitch("remote-debugging-pipe"));
+  }
+  void PostBrowserStart() override {
+    base::Thread::Options options;
+    options.message_pump_type = base::MessagePumpType::IO;
+    CHECK(io_.StartWithOptions(std::move(options)));
+    auto* collection = GlobalBrowserCollection::GetInstance();
+    observation_.Observe(collection);
+    collection->ForEach([&](BrowserWindowInterface* browser) {
+      Schedule(browser);
+      return true;
+    });
+  }
+  void OnBrowserCreated(BrowserWindowInterface* browser) override {
+    Schedule(browser);
+  }
+  void OnBrowserActivated(BrowserWindowInterface* browser) override {
+    Schedule(browser);
+  }
+  void OnBrowserClosed(BrowserWindowInterface* browser) override {
+    windows_.erase(browser->GetSessionID().id());
+  }
+  void PostMainMessageLoopRun() override {
+    observation_.Reset();
+    weak_.InvalidateWeakPtrs();
+    windows_.clear();
+    io_.Stop();
+  }
+ private:
+  void Schedule(BrowserWindowInterface* browser) {
+    if (browser->GetType() != BrowserWindowInterface::TYPE_NORMAL ||
+        browser->GetProfile()->IsOffTheRecord() ||
+        windows_.contains(browser->GetSessionID().id()))
+      return;
+    // Window creation notifications precede initial tab/view construction.
+    base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
+        FROM_HERE, base::BindOnce(&AgenticBrowserParts::Attach,
+                                 weak_.GetWeakPtr(), browser->GetWeakPtr()));
+  }
+  void Attach(base::WeakPtr<BrowserWindowInterface> browser) {
+    if (!browser || browser->IsDeleteScheduled() ||
+        browser->GetTabStripModel()->empty() ||
+        windows_.contains(browser->GetSessionID().id()))
+      return;
+    auto discovery = browser->GetProfile()->GetPath().AppendASCII(
+        "agentic-poc-" + base::NumberToString(browser->GetSessionID().id()) + ".json");
+    const auto test_root = base::CommandLine::ForCurrentProcess()->GetSwitchValuePath("user-data-dir");
+    if (explicit_poc_ && !legacy_discovery_assigned_ && !test_root.empty()) {
+      discovery = test_root.AppendASCII("agentic-poc.json");
+      legacy_discovery_assigned_ = true;
+    }
+    auto controller = std::make_unique<PocParts>();
+    auto* initialized = controller.get();
+    windows_.emplace(browser->GetSessionID().id(), std::move(controller));
+    initialized->Initialize(browser.get(), std::move(discovery), io_.task_runner());
+  }
+  // Window teardown only queues server destruction; join once at app shutdown.
+  base::Thread io_{"AgenticPoCIO"};
+  bool explicit_poc_ = false;
+  bool legacy_discovery_assigned_ = false;
+  std::map<int, std::unique_ptr<PocParts>> windows_;
+  base::ScopedObservation<GlobalBrowserCollection, BrowserCollectionObserver>
+      observation_{this};
+  base::WeakPtrFactory<AgenticBrowserParts> weak_{this};
+};
 }  // namespace
 
 std::unique_ptr<ChromeBrowserMainExtraParts> CreateAgenticPocParts() {
-  return std::make_unique<PocParts>();
+  return std::make_unique<AgenticBrowserParts>();
 }

@@ -32,6 +32,7 @@
 #include "ui/compositor/layer.h"
 #include "ui/color/color_provider.h"
 #include "ui/gfx/canvas.h"
+#include "ui/gfx/color_utils.h"
 #include "ui/base/resource/resource_bundle.h"
 #include "ui/gfx/image/image_skia_operations.h"
 #include "chrome/grit/theme_resources.h"
@@ -597,26 +598,34 @@ class SpaceOverviewButton : public views::Button {
     flags.setStyle(cc::PaintFlags::kStroke_Style);
     flags.setStrokeWidth(1.5f);
     const int middle = height() / 2;
-    if (count_ == 0) {
-      const auto* logo = ui::ResourceBundle::GetSharedInstance().GetImageSkiaNamed(IDR_AGENTIC_LOGO_MONO);
-      const auto scaled = gfx::ImageSkiaOperations::CreateResizedImage(
-          *logo, skia::ImageOperations::RESIZE_BEST, gfx::Size(20, 20));
-      canvas->DrawImageInt(gfx::ImageSkiaOperations::CreateColorMask(scaled, ink),
-                           4, middle - 10);
-    } else {
-      // A compact stack with the task count inside the front card.
-      canvas->DrawLine(gfx::Point(9, middle - 9), gfx::Point(21, middle - 9), flags);
-      canvas->DrawRoundRect(gfx::RectF(6, middle - 6, 17, 16), 4, flags);
+    const auto* logo = ui::ResourceBundle::GetSharedInstance().GetImageSkiaNamed(IDR_AGENTIC_LOGO_MONO);
+    const auto scaled = gfx::ImageSkiaOperations::CreateResizedImage(
+        *logo, skia::ImageOperations::RESIZE_BEST, gfx::Size(20, 20));
+    canvas->DrawImageInt(gfx::ImageSkiaOperations::CreateColorMask(scaled, ink),
+                         4, middle - 10);
+    if (count_ > 0) {
+      // Keep the Portal silhouette; the badge sits over the pointer corner.
+      const bool dark = color_utils::IsDark(
+          GetColorProvider()->GetColor(kColorToolbar));
+      const SkColor badge_ink = dark ? SK_ColorWHITE : SK_ColorBLACK;
+      const SkColor badge_fill = dark ? SK_ColorBLACK : SK_ColorWHITE;
+      flags.setStyle(cc::PaintFlags::kFill_Style);
+      flags.setColor(badge_fill);
+      canvas->DrawCircle(gfx::Point(21, middle + 6), 6, flags);
+      flags.setStyle(cc::PaintFlags::kStroke_Style);
+      flags.setStrokeWidth(1);
+      flags.setColor(badge_ink);
+      canvas->DrawCircle(gfx::Point(21, middle + 6), 6, flags);
       const auto number = count_ > 99 ? u"99+" : base::NumberToString16(count_);
       canvas->DrawStringRectWithFlags(number,
-          gfx::FontList().DeriveWithSizeDelta(count_ > 99 ? -3 : -1), ink,
-          gfx::Rect(7, middle - 6, 15, 16), gfx::Canvas::TEXT_ALIGN_CENTER);
+          gfx::FontList().DeriveWithSizeDelta(count_ > 9 ? -5 : -4),
+          badge_ink, gfx::Rect(15, middle, 12, 12), gfx::Canvas::TEXT_ALIGN_CENTER);
     }
     flags.setStyle(cc::PaintFlags::kFill_Style);
     const std::array<SkColor, 3> colors = {kBlue, kGreen, kRed};
     for (size_t i = 0; i < active_.size(); ++i) {
       flags.setColor(active_[i] ? colors[i] : SkColorSetA(ink, 45));
-      canvas->DrawCircle(gfx::Point(27, middle - 6 + static_cast<int>(i) * 6),
+      canvas->DrawCircle(gfx::Point(30, middle - 6 + static_cast<int>(i) * 6),
                          2, flags);
     }
   }

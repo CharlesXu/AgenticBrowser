@@ -28,7 +28,8 @@ async function files(dir) {
   return found;
 }
 const resources=[...await files(theme), ...await files(resolve(root,'.chromium/src/components/resources'))].filter(path =>
-  /\/(?:default_\d+_percent\/)?chromium\/product_logo[^/]*\.(png|svg)$/.test(path));
+  /\/(?:default_\d+_percent\/)?chromium\/product_logo[^/]*\.(png|svg)$/.test(path) ||
+  /\/common\/favicon_ntp\.png$/.test(path));
 for (const target of resources) {
   if (target.endsWith('.svg')) {
     await writeFile(target, `<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 1024 1024"><image width="1024" height="1024" xlink:href="data:image/png;base64,${bytes.toString('base64')}"/></svg>\n`);

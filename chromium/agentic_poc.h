@@ -5,7 +5,7 @@
 
 #include "chrome/browser/chrome_browser_main_extra_parts.h"
 
-// Enabled only by --agentic-poc; ordinary Chromium startup is unchanged.
+// Space controls are part of every normal Agentic Browser window.
 std::unique_ptr<ChromeBrowserMainExtraParts> CreateAgenticPocParts();
 
 #endif
