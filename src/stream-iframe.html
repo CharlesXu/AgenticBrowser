@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="zh-CN"><meta charset="utf-8"><title>跨源帧计数</title>
+<style>html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#234c5a}canvas{display:block;width:100%;height:100%}</style>
+<canvas width="300" height="156"></canvas>
+<script>
+const canvas=document.querySelector('canvas'),ctx=canvas.getContext('2d');
+const parentURL=new URL(location.href);parentURL.hostname='127.0.0.1';
+const parentOrigin=parentURL.origin;
+let counter=0,frozen=false;
+window.addEventListener('message',event=>{
+  if(event.source===parent&&event.origin===parentOrigin&&event.data?.type==='probe-freeze'&&typeof event.data.frozen==='boolean')frozen=event.data.frozen;
+});
+function draw(){
+  if(!frozen){
+    ++counter;ctx.fillStyle='#234c5a';ctx.fillRect(0,0,300,156);
+    ctx.fillStyle='#fff';ctx.font='20px monospace';ctx.fillText(`iframe ${counter}`,12,32);
+    ctx.fillStyle='#f09bda';ctx.beginPath();ctx.arc(22+(counter*2)%256,88,16,0,Math.PI*2);ctx.fill();
+    parent.postMessage({type:'probe-frame',counter},parentOrigin);
+  }
+  requestAnimationFrame(draw);
+}
+requestAnimationFrame(draw);
+</script></html>

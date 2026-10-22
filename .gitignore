@@ -1,0 +1,8 @@
+.chromium/
+.tools/
+.runtime/
+node_modules/
+.DS_Store
+evidence/
+.env
+.env.*

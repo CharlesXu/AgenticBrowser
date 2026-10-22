@@ -1,0 +1,32 @@
+{
+  "name": "agentic-browser-poc",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "baseline:prepare": "node scripts/download-bootstrap.mjs",
+    "extension:prepare": "node scripts/download-extension.mjs",
+    "baseline": "node src/baseline.ts",
+    "baseline:verify": "node src/baseline.ts --verify",
+    "spaces": "node src/baseline.ts --spaces",
+    "spaces:verify": "node src/baseline.ts --spaces --verify",
+    "chromium:sync": "bash scripts/chromium.sh sync",
+    "chromium:check": "node scripts/check-chromium-upstream.mjs",
+    "chromium:build": "bash scripts/chromium.sh build",
+    "mcp": "node src/mcp.ts",
+    "mcp:verify": "node scripts/verify-mcp.mjs",
+    "vnc": "node src/vnc.ts",
+    "vnc:prepare": "bash scripts/prepare-vnc.sh",
+    "vnc:build": "bash scripts/build-vnc.sh"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/client": "2.3.1",
+    "@modelcontextprotocol/server": "2.3.1",
+    "@novnc/novnc": "1.7.0",
+    "ws": "8.22.0",
+    "zod": "4.6.7"
+  }
+}

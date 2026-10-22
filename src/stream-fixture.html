@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>空间画面与输入验收</title>
+<style>
+  *{box-sizing:border-box}body{margin:18px auto;padding:0 16px;max-width:1040px;font:15px/1.5 system-ui,sans-serif;background:#f5f7fb;color:#202b38}
+  header{display:flex;align-items:center;justify-content:space-between;margin-bottom:12px}h1{font-size:22px;margin:0}label{cursor:pointer}
+  .panels{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}.panel{background:white;border:1px solid #cbd4df;border-radius:6px;padding:8px;min-width:0}.panel h2{font-size:14px;margin:0 0 6px}
+  canvas,iframe{display:block;width:100%;height:156px;border:0}canvas{background:#162333}iframe{background:#fff}
+  .targets{display:flex;gap:14px;margin:14px 0}.targets button{flex:1;height:55px;border:2px solid #202b38;color:white;font:600 16px system-ui;cursor:pointer}
+  #target-red{background:#e74139}#target-blue{background:#286dd7}#target-green{background:#138348}
+  textarea{display:block;width:100%;height:80px;margin:5px 0 10px;padding:8px;border:1px solid #8796a7;font:16px system-ui;resize:none}
+  #summary{font:13px/1.5 ui-monospace,monospace;margin:0;white-space:pre-wrap}#error{color:#a32620;margin:3px 0}
+</style>
+<header><h1>空间画面与输入验收</h1><label><input id="freeze" type="checkbox"> 冻结动画（像素比对）</label></header>
+<section class="panels">
+  <div class="panel"><h2>Canvas · 持续绘制与计数</h2><canvas id="canvas" width="300" height="156"></canvas></div>
+  <div class="panel"><h2 id="gl-label">WebGL · 动态清屏</h2><canvas id="webgl" width="300" height="156"></canvas></div>
+  <div class="panel"><h2>跨源 iframe · localhost</h2><iframe id="cross-frame" title="跨源动画计数"></iframe></div>
+</section>
+<div class="targets">
+  <button id="target-red" data-target>红色目标</button><button id="target-blue" data-target>蓝色目标</button><button id="target-green" data-target>绿色目标</button>
+</div>
+<label for="input">远程／本机输入结果</label><textarea id="input" data-target placeholder="在此输入，实际结果会回报本地验收服务"></textarea>
+<pre id="summary">正在等待首次画面与 iframe 回报…</pre><p id="error"></p>
+<script>
+/*CONFIG*/
+document.title=`${config.space} · 画面与输入验收`;
+sessionStorage.setItem('poc-space',config.space);
+const canvas=document.querySelector('#canvas'),ctx=canvas.getContext('2d');
+const glCanvas=document.querySelector('#webgl'),gl=glCanvas.getContext('webgl',{preserveDrawingBuffer:true,antialias:false});
+if(!gl)document.querySelector('#gl-label').textContent='WebGL · 当前不可用';
+const frame=document.querySelector('#cross-frame'),input=document.querySelector('#input'),freeze=document.querySelector('#freeze');
+const iframeURL=new URL('/fixture/iframe',location.href);iframeURL.hostname='localhost';
+let raf=0,glFrames=0,iframeFrames=0,clicks=0,lastClick=null;
+frame.src=iframeURL.href;
+frame.addEventListener('load',()=>frame.contentWindow.postMessage({type:'probe-freeze',frozen:freeze.checked},iframeURL.origin));
+freeze.addEventListener('change',()=>frame.contentWindow.postMessage({type:'probe-freeze',frozen:freeze.checked},iframeURL.origin));
+window.addEventListener('message',event=>{
+  if(event.source===frame.contentWindow&&event.origin===iframeURL.origin&&event.data?.type==='probe-frame'&&Number.isSafeInteger(event.data.counter)&&event.data.counter>=0)iframeFrames=event.data.counter;
+});
+document.addEventListener('click',event=>{
+  const target=event.target.closest('[data-target]');if(!target)return;
+  ++clicks;lastClick={id:target.id,x:event.clientX,y:event.clientY};
+  void report();
+});
+function draw(){
+  if(!freeze.checked){
+    ++raf;
+    ctx.fillStyle='#162333';ctx.fillRect(0,0,300,156);
+    ctx.fillStyle='#f9cc39';ctx.fillRect((raf*3)%268,65,32,32);
+    ctx.fillStyle='#fff';ctx.font='20px monospace';ctx.fillText(`Canvas ${raf}`,12,32);
+    ctx.fillStyle='#41e0d1';ctx.fillRect(12,128,276,8);
+    if(gl){++glFrames;gl.clearColor(.5+.45*Math.sin(glFrames/30),.3+.25*Math.sin(glFrames/47),.55,1);gl.clear(gl.COLOR_BUFFER_BIT);}
+  }
+  requestAnimationFrame(draw);
+}
+requestAnimationFrame(draw);
+// Optional static high-detail page checks the real lossless frame transport size.
+if(new URL(location.href).searchParams.has('noise')){
+  const detail=document.createElement('canvas');detail.width=innerWidth;detail.height=innerHeight;
+  detail.style.cssText='position:fixed;inset:0;width:100vw;height:100vh;z-index:10';document.body.append(detail);
+  const c=detail.getContext('2d'),pixels=c.createImageData(detail.width,detail.height);let seed=17;
+  for(let i=0;i<pixels.data.length;i+=4){for(let j=0;j<3;j++){seed=(Math.imul(seed,1664525)+1013904223)|0;pixels.data[i+j]=seed>>>24;}pixels.data[i+3]=255;}c.putImageData(pixels,0,0);
+}
+async function report(){
+  const rect=input.getBoundingClientRect();
+  const targets=[...document.querySelectorAll('[data-target]')].map(el=>{const r=el.getBoundingClientRect();return{id:el.id,x:r.x+r.width/2,y:r.y+r.height/2,width:r.width,height:r.height};});
+  const probe={raf,gl:glFrames,glAvailable:!!gl,iframe:iframeFrames,clicks,lastClick,input:input.value,targets,frozen:freeze.checked};
+  const data={space:config.space,probe,input:input.value,inputFocused:document.activeElement===input,point:{x:rect.left+25,y:rect.top+25},account:null,session:config.space,visible:document.visibilityState,focused:document.hasFocus(),shared:localStorage.getItem('poc-shared'),extensionActive:false};
+  document.querySelector('#summary').textContent=`Canvas ${raf} · WebGL ${glFrames} · iframe ${iframeFrames} · 点击 ${clicks}\n最后点击：${lastClick?`${lastClick.id} (${lastClick.x}, ${lastClick.y})`:'无'} · 输入 ${input.value.length} 字`;
+  const response=await fetch('/fixture/report',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)});
+  if(!response.ok)throw new Error('回报服务不可用');
+}
+input.addEventListener('input',()=>{void report();});
+setInterval(()=>report().catch(error=>document.querySelector('#error').textContent=error.message),500);
+report().catch(error=>document.querySelector('#error').textContent=error.message);
+</script>
+</html>

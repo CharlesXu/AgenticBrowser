@@ -1,0 +1,7 @@
+{
+  "repository": "https://chromium.googlesource.com/chromium/src.git",
+  "channel": "Stable",
+  "platform": "Mac",
+  "version": "156.0.8078.48",
+  "revision": "d0c02bfad08ec92a6ffcf989e53cd995e6381a4c"
+}

@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Agentic Browser</title>
+<style>
+  body{font:16px/1.6 system-ui,sans-serif;max-width:760px;margin:32px auto;padding:0 20px;color:#202b38;background:#f6f8fa}
+  h1{font-size:24px}button,input,textarea{font:inherit;padding:8px;margin:5px 8px 5px 0}
+  pre{background:white;border:1px solid #d9dfe7;padding:16px;white-space:pre-wrap}textarea{width:90%;height:100px}
+  .note{color:#59677b}#status{font-weight:600}
+</style>
+<h1 id="heading"></h1>
+<p class="note" id="note">第一阶段基线验证 · 本地虚构账号 · 独立测试 Profile</p>
+<button id="login">登录测试账号</button><button id="logout">退出登录</button>
+<p id="status">正在读取浏览器存储…</p>
+<label>本标签页输入区（各页面独立）<br><textarea placeholder="用于后续人工并行输入验收"></textarea></label>
+<p><a id="new-tab" target="_blank" rel="noopener">在新标签中打开本页面</a></p>
+<pre id="state"></pre>
+<script>
+/*CONFIG*/
+const names={main:'主空间', 'task-a':'任务空间 A','task-b':'任务空间 B'};
+document.title='Agentic Browser';
+document.querySelector('#heading').textContent=names[config.space];
+document.querySelector('#note').textContent+=config.nativeSpaces?' · 原生空间模式':' · 普通窗口预备验证';
+const childURL=new URL(location.href);childURL.searchParams.set('tab','child');
+document.querySelector('#new-tab').href=childURL.href;
+sessionStorage.setItem('poc-space',config.space);
+const database = new Promise((resolve,reject)=>{
+  const request=indexedDB.open('agentic-poc',1);
+  request.onupgradeneeded=()=>request.result.createObjectStore('shared');
+  request.onsuccess=()=>resolve(request.result);
+  request.onerror=()=>reject(request.error);
+});
+async function stored(write){
+  const db=await database;
+  return new Promise((resolve,reject)=>{
+    const tx=db.transaction('shared',write?'readwrite':'readonly');
+    const request=write?tx.objectStore('shared').put(config.runId,'marker'):tx.objectStore('shared').get('marker');
+    tx.oncomplete=()=>resolve(write?config.runId:request.result);
+    tx.onerror=()=>reject(tx.error);
+  });
+}
+async function login(){
+  await fetch('/fixture/login',{method:'POST'});
+  localStorage.setItem('poc-shared',config.runId);
+  await stored(true);
+}
+document.querySelector('#login').onclick=()=>login().catch(showError);
+document.querySelector('#logout').onclick=()=>fetch('/fixture/logout',{method:'POST'});
+let handledLogout=false;
+function showError(error){document.querySelector('#status').textContent=String(error);}
+async function observe(){
+  let current=await (await fetch('/fixture/state')).json();
+  if(config.verify && config.space==='main' && current.phase==='logout' && !handledLogout){
+    handledLogout=true;
+    await fetch('/fixture/logout',{method:'POST'});
+    current=await (await fetch('/fixture/state')).json();
+  }
+  const input=document.querySelector('textarea'), rect=input.getBoundingClientRect();
+  const report={space:config.space,account:current.account,shared:localStorage.getItem('poc-shared'),indexed:await stored(false),session:sessionStorage.getItem('poc-space'),visible:document.visibilityState,input:input.value,point:{x:rect.left+25,y:rect.top+25},focused:document.hasFocus()};
+  report.inputFocused=document.activeElement===input;
+  const link=document.querySelector('#new-tab').getBoundingClientRect();
+  report.newTabPoint={x:link.left+20,y:link.top+10};
+  report.extensionActive=document.documentElement.dataset.darkreaderMode==='dynamic' && Boolean(document.querySelector('style.darkreader--sync')?.sheet?.cssRules.length);
+  document.querySelector('#state').textContent=JSON.stringify(report,null,2);
+  document.querySelector('#status').textContent=current.account?'同源登录态可用':'当前已退出登录';
+  await fetch('/fixture/report',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(report)});
+}
+(async()=>{
+  if(config.verify && config.space==='main')await login();
+  await observe();
+  setInterval(()=>observe().catch(showError),500);
+})().catch(showError);
+</script>
+</html>

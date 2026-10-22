@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>空间 B · 远程观看</title>
+<style>
+  *{box-sizing:border-box}body{margin:0;background:#111827;color:#f8fafc;font:15px system-ui,sans-serif;height:100dvh;display:flex;flex-direction:column}
+  header{display:flex;align-items:center;gap:14px;padding:12px 18px;background:#1f2937;flex-wrap:wrap;border-bottom:2px solid #64748b}
+  header.viewing{border-color:#22c55e}header.controlling{border-color:#ef4444}strong{font-size:16px}#status{flex:1;color:#cbd5e1}
+  .viewing #status{color:#86efac}.controlling #status{color:#fca5a5}button{border:0;border-radius:8px;padding:10px 16px;background:#f8fafc;color:#172033;cursor:pointer;font:inherit}button:disabled{opacity:.4;cursor:default}
+  #screen{flex:1;min-height:0;overflow:hidden}#notice{padding:8px 18px;color:#cbd5e1;font-size:13px}#notice:empty{display:none}
+  #keyboard-panel{padding:10px 18px;background:#1f2937}#keyboard-panel[hidden]{display:none}#keyboard-panel label{display:block;font-size:13px;margin-bottom:6px}
+  #keyboard-text{display:block;width:100%;min-height:60px;margin-bottom:8px;padding:8px;font:16px system-ui;resize:none}#keyboard-panel button{margin-right:6px;min-height:44px}
+</style>
+<header id="bar"><strong data-i18n="space_b">空间 B</strong><span id="status" data-i18n="not_connected">尚未连接</span><button id="connect" data-i18n="connect">连接观看</button><button id="take" disabled data-i18n="take">接管</button><button id="keyboard" disabled aria-expanded="false" aria-controls="keyboard-panel" data-i18n="keyboard">键盘</button><button id="give" disabled data-i18n="give_control">交还控制权</button><button id="disconnect" disabled data-i18n="disconnect">断开</button></header>
+<div id="screen"></div><div id="notice"></div>
+<section id="keyboard-panel" hidden><label for="keyboard-text" data-i18n="keyboard_help">先点远程输入框，再在这里输入文字并发送（最多 256 字符）</label><textarea id="keyboard-text" rows="2" maxlength="256" autocomplete="off" autocapitalize="off" spellcheck="false"></textarea><button id="send-text" data-i18n="send_text">发送文字</button><button id="backspace" data-i18n="backspace">退格</button><button id="enter" data-i18n="enter">回车</button></section>
+<script type="module">
+/*AGENTIC_LOCALES*/
+const language = navigator.language.toLowerCase().startsWith("zh") ? "zh-CN" : "en-US";
+const t = key => locales[language][key] ?? locales["en-US"][key];
+document.documentElement.lang = language;
+document.title = t("vnc_title");
+for (const el of document.querySelectorAll("[data-i18n]")) el.textContent = t(el.dataset.i18n);
+import RFB from '/novnc/core/rfb.js';
+const token = location.hash.slice(1);
+history.replaceState(null, '', location.pathname);
+const $ = id => document.getElementById(id);
+let rfb, timer, connected = false, connecting = false, requestInFlight = false;
+let keyboardEpoch = 0, composing = false, sending = false;
+const canType = () => connected && rfb && !rfb.viewOnly && !requestInFlight;
+function closeKeyboard() {
+  keyboardEpoch++; composing = false;
+  $('keyboard-text').blur(); $('keyboard-text').value = '';
+  $('keyboard-panel').hidden = true; $('keyboard').setAttribute('aria-expanded', 'false');
+}
+$('keyboard').onclick = () => {
+  if (!canType()) return;
+  if (!$('keyboard-panel').hidden) { closeKeyboard(); return; }
+  $('keyboard-panel').hidden = false; $('keyboard').setAttribute('aria-expanded', 'true');
+  rfb.blur(); $('keyboard-text').focus(); // Keep focus inside this user gesture for mobile keyboards.
+};
+$('keyboard-text').addEventListener('compositionstart', () => { composing = true; });
+$('keyboard-text').addEventListener('compositionend', () => { composing = false; });
+$('send-text').onclick = async () => {
+  if (!canType() || composing || sending) return;
+  const text = $('keyboard-text').value, epoch = keyboardEpoch, connection = rfb;
+  sending = true; $('send-text').disabled = true; $('keyboard-text').readOnly = true;
+  try {
+    for (const character of text) {
+      if (!canType() || rfb !== connection || keyboardEpoch !== epoch) return;
+      const point = character.codePointAt(0);
+      const keysym = point === 10 ? 0xff0d : point === 9 ? 0xff09 : point <= 0xff ? point : 0x01000000 | point;
+      connection.sendKey(keysym, null);
+      // Avoid flooding the existing bounded input queue on multi-character IME commits.
+      await new Promise(done => setTimeout(done, 30));
+    }
+    if (keyboardEpoch === epoch) $('keyboard-text').value = '';
+  } finally { sending = false; $('send-text').disabled = false; $('keyboard-text').readOnly = false; }
+};
+for (const [id, keysym] of [['backspace',0xff08],['enter',0xff0d]]) $(id).onclick = () => {
+  if (canType() && !composing && !sending) rfb.sendKey(keysym, null);
+};
+async function api(path, method = 'GET') {
+  const response = await fetch(path, {method,headers:{Authorization:`Bearer ${token}`},cache:'no-store'});
+  const data = await response.json();
+  if (!response.ok) throw new Error(data.error || t("request_failed"));
+  return data;
+}
+function update(state) {
+  const controlling = connected && state.connected && state.controlling;
+  $('bar').className = connected && state.connected ? controlling ? 'controlling' : 'viewing' : '';
+  $('status').textContent = !connected ? t("not_connected") : !state.connected ? t("confirming") : controlling ? t("you_remote") : t("view_only");
+  $('take').disabled = !connected || !state.connected || controlling || requestInFlight;
+  $('give').disabled = !controlling || requestInFlight;
+  $('connect').disabled = !!rfb || connecting;
+  $('disconnect').disabled = !rfb;
+  $('keyboard').disabled = !controlling || requestInFlight;
+  if (!controlling) closeKeyboard();
+  if (rfb) rfb.viewOnly = !controlling;
+  $('notice').textContent = state.error || (state.owner === 'awaiting-resume' ? t("resuming_notice") : '');
+}
+async function refresh() {
+  try { update(await api('/status')); }
+  catch (error) { $('notice').textContent = error.message; if (rfb) rfb.viewOnly = true; $('keyboard').disabled = true; closeKeyboard(); }
+}
+$('connect').onclick = async () => {
+  if (!token) { $('notice').textContent = t("full_link"); return; }
+  if (rfb || connecting) return;
+  connecting = true; $('connect').disabled = true;
+  let credentials;
+  try { credentials = await api('/credentials'); }
+  catch (error) { connecting = false; $('connect').disabled = false; $('notice').textContent = error.message; return; }
+  rfb = new RFB($('screen'), `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/rfb?token=${encodeURIComponent(token)}`, { credentials });
+  rfb.scaleViewport = true; rfb.resizeSession = false; rfb.viewOnly = true;
+  rfb.addEventListener('connect', () => { connected = true; connecting = false; void refresh(); timer = setInterval(refresh, 500); });
+  rfb.addEventListener('disconnect', () => { connected = false; connecting = false; clearInterval(timer); rfb = undefined; update({}); });
+  rfb.addEventListener('securityfailure', () => { $('notice').textContent = t("auth_failed"); });
+  update({});
+};
+for (const [id, path] of [['take','/take'],['give','/return']]) $(id).onclick = async () => {
+  requestInFlight = true; $('take').disabled = $('give').disabled = true;
+  $('keyboard').disabled = true; closeKeyboard();
+  if (rfb) rfb.viewOnly = true;
+  try { await api(path, 'POST'); } catch (error) { $('notice').textContent = error.message; }
+  finally { requestInFlight = false; await refresh(); }
+};
+$('disconnect').onclick = () => { closeKeyboard(); rfb?.disconnect(); };
+window.addEventListener('pagehide', () => rfb?.disconnect());
+if (!token) $('notice').textContent = t("full_link");
+</script>
+</html>
