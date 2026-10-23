@@ -19,7 +19,7 @@ if (!alreadyApplied) {
 }
 execFileSync(process.execPath, [resolve(root, 'scripts/prepare-product.mjs')], { stdio: 'inherit' });
 execFileSync(process.execPath, [resolve(root, 'scripts/prepare-branding.mjs')], { stdio: 'inherit' });
-for (const name of ['agentic_poc.h', 'agentic_poc.cc', 'agentic_space_controls.h', 'agentic_space_controls.cc']) {
+for (const name of ['agentic_poc.h', 'agentic_poc.cc', 'agentic_space_controls.h', 'agentic_space_controls.cc', 'agentic_model_handler.cc', 'agentic_model_handler.h']) {
   const from = resolve(root, 'chromium', name);
   const to = resolve(source, 'chrome/browser', name);
   const current = await readFile(to, 'utf8').catch(error => {
@@ -31,3 +31,11 @@ for (const name of ['agentic_poc.h', 'agentic_poc.cc', 'agentic_space_controls.h
   if (current === null) await copyFile(from, to);
 }
 console.log('Native PoC hooks applied to the pinned source. No commit created.');
+
+for (const name of ['agentic_models.ts','agentic_models.html.ts','agentic_model_api.ts','agentic_decision.ts','agentic_xiangqi.ts']) {
+  const from=resolve(root,'chromium/settings',name);
+  const to=resolve(source,'chrome/browser/resources/settings/ai_page',name);
+  const current=await readFile(to,'utf8').catch(error=>{if(error.code==='ENOENT')return null;throw error;});
+  if(current!==null && current!==await readFile(from,'utf8'))throw new Error(`${to} differs from the project overlay; refusing to overwrite.`);
+  if(current===null)await copyFile(from,to);
+}

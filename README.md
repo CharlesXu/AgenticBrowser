@@ -1,6 +1,6 @@
 # Agentic Browser 第一阶段 PoC
 
-macOS ARM64 原生 Chromium 开发构建；共享登录态的多空间、主空间仅人操作、18 个受空间凭证约束的 MCP 工具，以及可选择非主空间的单路 noVNC。模型尚未接入。当前界面、Harness 接入、产品站点和 CI/CD 见 [接入与发布](docs/接入与发布.md)，实际验证记录见 [实施记录](第一阶段实施记录.md)。目前没有公开浏览器安装包。
+macOS ARM64 原生 Chromium 开发构建；共享登录态的多空间、主空间仅人操作、33 个受空间凭证约束的 MCP 工具，以及可选择非主空间的单路 noVNC。已增加[模型设置与决策任务](docs/模型接入与决策操控.md)，真实 API 验收后补。当前界面、Harness 接入、产品站点和 CI/CD 见 [接入与发布](docs/接入与发布.md)，实际验证记录见 [实施记录](第一阶段实施记录.md)。目前没有公开浏览器安装包。
 
 ## 当前运行方式
 
@@ -159,3 +159,7 @@ npm run mcp:verify -- "/测试Profile路径/task-a.json" "/测试Profile路径/t
 MCP 的 `space_handoff` 主动将当前空间交给人；原 Agent 保留旧 lease 作为身份证明，在人交还后 `space_resume` 并重新观察。`agentic-browser://guide` 返回与适配器一起发布的当前 Skill。参考 Ego 的任务连续性和交接方式，没有引入其完整 SDK 或扩大 PoC 权限。
 
 私有源码仓库：[CharlesXu/AgenticBrowser](https://github.com/CharlesXu/AgenticBrowser)。Chromium 定制代码、上游补丁、版本 SHA 均随 commit 管理。历史验收 `evidence/` 和运行数据仅保存在本地，详见 [上游维护](上游维护.md)。本节功能验证结果见实施记录，不由“已写入源码”推导为“已验证”。
+
+## 六目标 CI 与 Release
+
+已增加 Windows/macOS/Linux × x64/arm64 的手动构建、冒烟、打包及私有预发布流程。先检查 runner 资源，六个目标全部成功后才发布；当前不提供开发者证书签名或公证。配置、执行方式与实际状态见 [CI 与 Release](docs/CI与Release.md)。

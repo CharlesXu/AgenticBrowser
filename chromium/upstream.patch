@@ -6285,35 +6285,34 @@ index 7444f3f98a..3704b0a4ae 100644
          <structure type="chrome_scaled_image" name="IDR_BLUETOOTH_PAIRING_TICK" file="cros/bluetooth_pairing_tick.png" />
          <structure type="chrome_scaled_image" name="IDR_ENABLE_DEBUGGING_SUCCESS" file="cros/enable_debugging_success.png" />
 diff --git a/chrome/browser/BUILD.gn b/chrome/browser/BUILD.gn
-index 33a6696fd8..13304153ba 100644
+index 33a6696fd8..eb61adf81f 100644
 --- a/chrome/browser/BUILD.gn
 +++ b/chrome/browser/BUILD.gn
-@@ -1518,7 +1518,11 @@ source_set("core") {
+@@ -1516,6 +1516,22 @@ source_set("core") {
+     }
+   }
  
-   if (is_mac) {
-     sources += [
++  if (is_mac || is_win || is_linux) {
++    sources += [
 +      "agentic_poc.cc",
 +      "agentic_poc.h",
-       "app_controller_mac.mm",
 +      "agentic_space_controls.cc",
 +      "agentic_space_controls.h",
-       "browser_process_platform_part_mac.mm",
-       "chrome_browser_application_mac.mm",
-       "chrome_browser_main_mac.mm",
-@@ -1535,6 +1539,11 @@ source_set("core") {
-     ]
- 
-     deps += [
++    ]
++    deps += [
 +      "//chrome/browser/ui/window_metadata",
 +      "//chrome/browser/ui/browser_window",
 +      "//net",
 +      "//chrome/browser/ui/views/frame:browser_view_header",
 +      "//ui/base/metadata",
-       ":app_controller_mac",
-       ":chrome_browser_application_mac",
-       ":chrome_browser_main_mac",
++    ]
++  }
++
+   if (is_mac) {
+     sources += [
+       "app_controller_mac.mm",
 diff --git a/chrome/browser/chrome_browser_main.cc b/chrome/browser/chrome_browser_main.cc
-index b2619baa8f..641e3e7438 100644
+index b2619baa8f..58c3674078 100644
 --- a/chrome/browser/chrome_browser_main.cc
 +++ b/chrome/browser/chrome_browser_main.cc
 @@ -3,6 +3,7 @@
@@ -6328,7 +6327,7 @@ index b2619baa8f..641e3e7438 100644
        std::make_unique<ChromeBrowserMainExtraPartsOptimizationGuide>());
  #endif
  
-+#if BUILDFLAG(IS_MAC)
++#if BUILDFLAG(IS_MAC) || BUILDFLAG(IS_WIN) || BUILDFLAG(IS_LINUX)
 +  main_parts->AddParts(CreateAgenticPocParts());
 +#endif
 +
@@ -6396,6 +6395,22 @@ index 81e83a8848..954a21942e 100644
                                 home_page_flags);
    registry->RegisterStringPref(prefs::kNewTabPageLocationOverride,
                                 std::string());
+diff --git a/chrome/browser/resources/settings/BUILD.gn b/chrome/browser/resources/settings/BUILD.gn
+index 1795e894fc..64aa7b4ac6 100644
+--- a/chrome/browser/resources/settings/BUILD.gn
++++ b/chrome/browser/resources/settings/BUILD.gn
+@@ -204,6 +204,11 @@ build_webui("build") {
+     "ai_page/ai_page.ts",
+     "ai_page/ai_page_index.html.ts",
+     "ai_page/ai_page_index.ts",
++    "ai_page/agentic_models.ts",
++    "ai_page/agentic_models.html.ts",
++    "ai_page/agentic_model_api.ts",
++    "ai_page/agentic_decision.ts",
++    "ai_page/agentic_xiangqi.ts",
+     "ai_page/ai_policy_indicator.html.ts",
+     "ai_page/ai_policy_indicator.ts",
+     "ai_page/ai_site_add_dialog.html.ts",
 diff --git a/chrome/browser/resources/settings/about_page/about_page.html.ts b/chrome/browser/resources/settings/about_page/about_page.html.ts
 index b9ac4e634f..f083eed5ba 100644
 --- a/chrome/browser/resources/settings/about_page/about_page.html.ts
@@ -6442,6 +6457,31 @@ index aaaf8c6e7e..6ee797219d 100644
    }
  
    protected onRelaunchClick_() {
+diff --git a/chrome/browser/resources/settings/ai_page/ai_page_index.html.ts b/chrome/browser/resources/settings/ai_page/ai_page_index.html.ts
+index bd6c4bd023..1a9bcfeb01 100644
+--- a/chrome/browser/resources/settings/ai_page/ai_page_index.html.ts
++++ b/chrome/browser/resources/settings/ai_page/ai_page_index.html.ts
+@@ -10,7 +10,7 @@ export function getHtml(this: SettingsAiPageIndexElement) {
+   return html`<!--_html_template_start_-->
+ <cr-view-manager id="viewManager" class="cr-centered-card-container"
+     ?show-all="${this.shouldShowAll}">
+-  <settings-ai-info-card slot="view" id="aiInfoCard"></settings-ai-info-card>
++  <agentic-models slot="view" id="aiInfoCard"></agentic-models>
+ 
+   ${this.enableAiModeSearchSetting_ ? html`
+     <settings-ai-mode-search-page slot="view" id="aiModeSearch">
+diff --git a/chrome/browser/resources/settings/ai_page/ai_page_index.ts b/chrome/browser/resources/settings/ai_page/ai_page_index.ts
+index b349cf8fa7..cda4d30326 100644
+--- a/chrome/browser/resources/settings/ai_page/ai_page_index.ts
++++ b/chrome/browser/resources/settings/ai_page/ai_page_index.ts
+@@ -9,6 +9,7 @@
+  */
+ import 'chrome://resources/cr_elements/cr_view_manager/cr_view_manager.js';
+ import './ai_info_card.js';
++import './agentic_models.js';
+ import './ai_mode_search_page.js';
+ import './ai_page.js';
+ import '../geic_page/geic_page.js';
 diff --git a/chrome/browser/resources/settings/appearance_page/appearance_page.html.ts b/chrome/browser/resources/settings/appearance_page/appearance_page.html.ts
 index b6cf0bffe2..223453e133 100644
 --- a/chrome/browser/resources/settings/appearance_page/appearance_page.html.ts
@@ -6804,6 +6844,29 @@ index 01960e5d34..00c5b8b78d 100644
    SkPath path = style_->GetUnderlinePath(GetLocalBounds());
    cc::PaintFlags flags;
    flags.setAntiAlias(true);
+diff --git a/chrome/browser/ui/webui/settings/BUILD.gn b/chrome/browser/ui/webui/settings/BUILD.gn
+index 321973594d..fa0e4b2936 100644
+--- a/chrome/browser/ui/webui/settings/BUILD.gn
++++ b/chrome/browser/ui/webui/settings/BUILD.gn
+@@ -175,6 +175,8 @@ source_set("impl") {
+     "settings_security_key_handler.cc",
+     "settings_startup_pages_handler.cc",
+     "settings_ui.cc",
++    "//chrome/browser/agentic_model_handler.cc",
++    "//chrome/browser/agentic_model_handler.h",
+     "settings_utils.cc",
+     "shared_settings_localized_strings_provider.cc",
+     "site_settings_handler.cc",
+@@ -182,6 +184,9 @@ source_set("impl") {
+   ]
+ 
+   deps = [
++    "//components/os_crypt/async/browser",
++    "//components/os_crypt/async/common",
++    "//services/network/public/cpp",
+     ":settings",
+     "//chrome/app:command_ids",
+     "//chrome/app:generated_resources",
 diff --git a/chrome/browser/ui/webui/settings/appearance_handler.cc b/chrome/browser/ui/webui/settings/appearance_handler.cc
 index 3a5d78e018..5f2e7b5db6 100644
 --- a/chrome/browser/ui/webui/settings/appearance_handler.cc
@@ -6881,7 +6944,7 @@ index a1abf1e42e..f5e893a701 100644
  
    base::WeakPtrFactory<AppearanceHandler> weak_ptr_factory_{this};
 diff --git a/chrome/browser/ui/webui/settings/settings_localized_strings_provider.cc b/chrome/browser/ui/webui/settings/settings_localized_strings_provider.cc
-index 01763a850c..eabd6e2866 100644
+index 01763a850c..b5c79f345f 100644
 --- a/chrome/browser/ui/webui/settings/settings_localized_strings_provider.cc
 +++ b/chrome/browser/ui/webui/settings/settings_localized_strings_provider.cc
 @@ -3,6 +3,9 @@
@@ -6932,6 +6995,96 @@ index 01763a850c..eabd6e2866 100644
  
    html_source->AddBoolean("aboutObsoleteNowOrSoon",
                            ObsoleteSystem::IsObsoleteNowOrSoon());
+@@ -531,10 +542,7 @@ void AddAiStrings(content::WebUIDataSource* html_source) {
+ #endif
+   };
+   html_source->AddLocalizedStrings(kLocalizedStrings);
+-  html_source->AddLocalizedString("aiPageTitle",
+-                                  features::IsWebuiRefresh2026Enabled()
+-                                      ? IDS_SETTINGS_AI_PAGE_TITLE
+-                                      : IDS_SETTINGS_AI_INNOVATIONS_PAGE_TITLE);
++  html_source->AddString("aiPageTitle", AgenticText("models_title"));
+   html_source->AddLocalizedString(
+       "aiSuggestionsConsider1",
+       contextual_cueing::kUsePrivateAi.Get()
+diff --git a/chrome/browser/ui/webui/settings/settings_ui.cc b/chrome/browser/ui/webui/settings/settings_ui.cc
+index c1bb5d445e..766fdfdd45 100644
+--- a/chrome/browser/ui/webui/settings/settings_ui.cc
++++ b/chrome/browser/ui/webui/settings/settings_ui.cc
+@@ -3,6 +3,7 @@
+ // found in the LICENSE file.
+ 
+ #include "chrome/browser/ui/webui/settings/settings_ui.h"
++#include "chrome/browser/agentic_model_handler.h"
+ 
+ #include <stddef.h>
+ 
+@@ -223,6 +224,7 @@ using optimization_guide::UserVisibleFeatureKey;
+ // static
+ void SettingsUI::RegisterProfilePrefs(
+     user_prefs::PrefRegistrySyncable* registry) {
++  registry->RegisterDictionaryPref("agentic.model_providers");
+   registry->RegisterBooleanPref(prefs::kImportDialogAutofillFormData, true);
+   registry->RegisterBooleanPref(prefs::kImportDialogBookmarks, true);
+   registry->RegisterBooleanPref(prefs::kImportDialogHistory, true);
+@@ -241,6 +243,7 @@ SettingsUI::SettingsUI(content::WebUI* web_ui)
+       network::mojom::CSPDirectiveName::WorkerSrc,
+       "worker-src blob: chrome://resources 'self';");
+ 
++  AddSettingsPageUIHandler(CreateAgenticModelHandler());
+   AddSettingsPageUIHandler(std::make_unique<AppearanceHandler>(web_ui));
+ 
+ #if BUILDFLAG(IS_CHROMEOS)
+@@ -658,9 +661,7 @@ SettingsUI::SettingsUI(content::WebUI* web_ui)
+   // Within the AI subpage are separate sections for Glic, for GEIC, and for all
+   // other AI features. The visibility of these is separately controlled, but
+   // we want to show the subpage if any of them are enabled.
+-  html_source->AddBoolean("showAiPage",
+-                          show_glic_section || show_ai_features_section ||
+-                              enable_ai_mode_search || show_geic_section);
++  html_source->AddBoolean("showAiPage", true);
+   html_source->AddBoolean("showAiPageAiFeatureSection",
+                           show_ai_features_section);
+ 
+diff --git a/chrome/common/chrome_paths_linux.cc b/chrome/common/chrome_paths_linux.cc
+index 5575c049b2..193bbad60d 100644
+--- a/chrome/common/chrome_paths_linux.cc
++++ b/chrome/common/chrome_paths_linux.cc
+@@ -95,7 +95,7 @@ bool GetDefaultUserDataDirectory(base::FilePath* result) {
+ #elif BUILDFLAG(GOOGLE_CHROME_BRANDING)
+   std::string data_dir_basename = "google-chrome";
+ #else
+-  std::string data_dir_basename = "chromium";
++  std::string data_dir_basename = "agentic-browser";
+ #endif
+   *result = config_dir.Append(data_dir_basename + GetChannelSuffixForDataDir());
+   return true;
+diff --git a/chrome/common/chrome_paths_mac.mm b/chrome/common/chrome_paths_mac.mm
+index 6829c9cb92..911b945d7b 100644
+--- a/chrome/common/chrome_paths_mac.mm
++++ b/chrome/common/chrome_paths_mac.mm
+@@ -37,7 +37,7 @@ char* ProductDirNameForBundle(NSBundle* chrome_bundle) {
+ #elif BUILDFLAG(GOOGLE_CHROME_BRANDING)
+       product_dir_name = "Google/Chrome";
+ #else
+-      product_dir_name = "Chromium";
++      product_dir_name = "Agentic Browser";
+ #endif
+     }
+ 
+diff --git a/chrome/install_static/chromium_install_modes.h b/chrome/install_static/chromium_install_modes.h
+index a6d969df56..1859c6ce89 100644
+--- a/chrome/install_static/chromium_install_modes.h
++++ b/chrome/install_static/chromium_install_modes.h
+@@ -21,7 +21,7 @@ inline constexpr wchar_t kCompanyPathName[] = L"";
+ 
+ // The brand-specific product name to be included as a component of the install
+ // and user data directory paths.
+-inline constexpr wchar_t kProductPathName[] = L"Chromium";
++inline constexpr wchar_t kProductPathName[] = L"AgenticBrowser";
+ 
+ // The brand-specific safe browsing client name.
+ inline constexpr char kSafeBrowsingName[] = "chromium";
 diff --git a/components/components_chromium_strings.grd b/components/components_chromium_strings.grd
 index 154a930642..0ccb694cf5 100644
 --- a/components/components_chromium_strings.grd

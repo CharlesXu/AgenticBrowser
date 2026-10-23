@@ -1,4 +1,5 @@
 #include "chrome/browser/agentic_poc.h"
+#include "base/no_destructor.h"
 #include "chrome/browser/agentic_strings.h"
 #include "chrome/browser/agentic_space_controls.h"
 
@@ -17,6 +18,11 @@
 #include "base/containers/span.h"
 #include "base/feature_list.h"
 #include "base/files/file_util.h"
+#include "build/build_config.h"
+#if BUILDFLAG(IS_WIN)
+#include <windows.h>
+#include "base/win/security_descriptor.h"
+#endif
 #include "base/functional/bind.h"
 #include "base/json/json_reader.h"
 #include "base/json/json_writer.h"
@@ -69,6 +75,7 @@
 #include "third_party/skia/include/core/SkCanvas.h"
 #include "ui/base/base_window.h"
 #include "ui/gfx/codec/png_codec.h"
+#include "ui/gfx/codec/jpeg_codec.h"
 
 namespace {
 using Reply = base::OnceCallback<void(int, std::string)>;
@@ -426,14 +433,58 @@ class TaskSpace : public content::DevToolsAgentHostClient {
   base::WeakPtrFactory<TaskSpace> weak_{this};
 };
 
+class PocParts;
+auto& ModelControllers() {
+  static base::NoDestructor<std::set<PocParts*>> controllers;
+  return *controllers;
+}
+
 class PocParts : public TabStripModelObserver,
                  public content::DownloadManager::Observer {
  public:
   PocParts() {
+    ModelControllers().insert(this);
     for (const char* name : {"main", "task-a", "task-b"})
       spaces_.push_back(std::make_unique<TaskSpace>(name));
   }
-  ~PocParts() override { Shutdown(); }
+  ~PocParts() override { ModelControllers().erase(this); Shutdown(); }
+  bool IsModelSettings(content::WebContents* tab) const {
+    return browser_ && tab && tab->GetLastCommittedURL().SchemeIs("chrome") &&
+      tab->GetLastCommittedURL().host()=="settings" && SpaceFor(tab)==0;
+  }
+  base::DictValue ModelSpaces() const {
+    base::ListValue list;int number=0;
+    for(const auto& space:spaces_) if(space->name!="main"&&!space->closed&&!space->closing) {
+      base::DictValue item;item.Set("id",space->name);item.Set("number",++number);
+      item.Set("available",space->lease.empty()&&!space->human&&!space->awaiting_resume);
+      if(auto* tab=space->Contents())item.Set("title",base::UTF16ToUTF8(tab->GetTitle()));
+      list.Append(std::move(item));
+    }
+    return base::DictValue().Set("spaces",std::move(list));
+  }
+  void ModelRequest(const std::string& name,base::DictValue data,Reply reply) {
+    for(const auto& space:spaces_) if(space->name==name&&name!="main"&&!space->closed&&!space->closing) {
+      net::HttpServerRequestInfo request;request.method="POST";request.path="/space";
+      request.headers["authorization"]="Bearer "+space->token;data.Set("space",name);
+      request.data=base::WriteJson(data).value();
+      Handle(std::move(request),std::make_shared<std::atomic_bool>(true),std::move(reply));return;
+    }
+    Reject(std::move(reply),403,"space_not_authorized");
+  }
+  void CancelModel(const std::string& name,const std::string& lease) {
+    if(lease.empty())return;
+    for(auto& space:spaces_) if(space->name==name&&name!="main") {
+      if(space->lease!=lease&&space->previous_lease!=lease)continue;
+      if(space->lease==lease&&space->remote_client.empty()) {
+        space->ReleaseRemoteInput();space->lease.clear();++space->generation;
+        space->needs_observation=false;if(!space->streaming)space->Detach();
+      }
+      // The task is ending, so discard only its own return proof. Human / VNC
+      // control stays intact and is never silently reclaimed.
+      if(space->previous_lease==lease){space->previous_lease.clear();space->awaiting_resume=false;}
+      space->RefreshInputGuard();RefreshControls();return;
+    }
+  }
   void Initialize(BrowserWindowInterface* main, base::FilePath discovery,
                   scoped_refptr<base::SingleThreadTaskRunner> io_runner) {
     const auto* command = base::CommandLine::ForCurrentProcess();
@@ -817,8 +868,23 @@ class PocParts : public TabStripModelObserver,
     files_->PostTask(FROM_HERE,
                      base::BindOnce(
                          [](base::FilePath path, std::string json) {
-                           CHECK(base::WriteFile(path, json));
+#if BUILDFLAG(IS_WIN)
+                           // Restrict the capability file before writing secrets.
+                           if (!base::PathExists(path))
+                             CHECK(base::WriteFile(path, ""));
+                           auto token = base::win::AccessToken::FromCurrentProcess();
+                           CHECK(token);
+                           auto security = base::win::SecurityDescriptor::CreateWithEmptyDacl();
+                           CHECK(security.SetDaclEntry(*token,
+                               base::win::SecurityAccessMode::kGrant, FILE_ALL_ACCESS, 0));
+                           security.set_dacl_protected(true);
+                           CHECK(security.WriteToFile(path, DACL_SECURITY_INFORMATION));
+#else
+                           if (!base::PathExists(path))
+                             CHECK(base::WriteFile(path, ""));
                            CHECK(base::SetPosixFilePermissions(path, 0600));
+#endif
+                           CHECK(base::WriteFile(path, json));
                          },
                          discovery_, base::WriteJson(result).value()));
   }
@@ -889,7 +955,8 @@ class PocParts : public TabStripModelObserver,
       RefreshControls();
     }
   }
-  void CapturePreview(TaskSpace& space, Alive alive, Reply reply) {
+  void CapturePreview(TaskSpace& space, Alive alive, Reply reply,
+                      const base::DictValue* options = nullptr) {
     auto* contents = space.Contents();
     auto* view = contents ? contents->GetRenderWidgetHostView() : nullptr;
     if (!view || !view->IsSurfaceAvailableForCopy() ||
@@ -902,28 +969,60 @@ class PocParts : public TabStripModelObserver,
     const auto url = contents->GetLastCommittedURL();
     const auto weak_contents = contents->GetWeakPtr();
     const auto id = SpaceFor(contents);
-    const auto output = gfx::Size(480, std::max(1, 480 * size.height() /
-                                                   std::max(1, size.width())));
-    view->CopyFromSurface(gfx::Rect(), output, base::Milliseconds(800),
+    gfx::Rect source(size);
+    bool jpeg = options && options->FindString("format") &&
+                *options->FindString("format") == "jpeg";
+    if (options && options->FindDict("clip")) {
+      const auto& clip = *options->FindDict("clip");
+      const auto x = clip.FindDouble("x"), y = clip.FindDouble("y"),
+                 w = clip.FindDouble("width"), h = clip.FindDouble("height");
+      const double scale = CssScale(contents);
+      if (!x || !y || !w || !h || !std::isfinite(*x + *y + *w + *h) ||
+          *x < 0 || *y < 0 || *w < 1 || *h < 1 ||
+          (*x + *w) * scale > size.width() + 1 ||
+          (*y + *h) * scale > size.height() + 1 ||
+          !contents->GetPrimaryPage().IsPageScaleFactorOne()) {
+        Reject(std::move(reply), 400, "invalid_capture_clip"); return;
+      }
+      source = gfx::Rect(std::lround(*x * scale), std::lround(*y * scale),
+                         std::lround(*w * scale), std::lround(*h * scale));
+      source.Intersect(gfx::Rect(size));
+    }
+    auto output = gfx::Size(480, std::max(1, 480 * source.height() /
+                                               std::max(1, source.width())));
+    if (options && options->FindInt("maxEdge")) {
+      const int edge = std::clamp(*options->FindInt("maxEdge"), 280, 768);
+      const double ratio = static_cast<double>(edge) /
+                          std::max(source.width(), source.height());
+      output = gfx::Size(std::max(1, static_cast<int>(source.width() * ratio)),
+                         std::max(1, static_cast<int>(source.height() * ratio)));
+    }
+    const int generation = space.generation;
+    view->CopyFromSurface(source, output, base::Milliseconds(800),
         base::BindPostTaskToCurrentDefault(base::BindOnce(
           [](base::WeakPtr<PocParts> self, int id,
              base::WeakPtr<content::WebContents> contents, GURL url,
+             int generation, gfx::Size size, bool jpeg,
              Alive alive, Reply reply, const content::CopyFromSurfaceResult& frame) {
             if (!alive->load()) return;
             if (!self || !contents || self->spaces_[id]->closed ||
                 self->spaces_[id]->Contents() != contents.get() ||
+                self->spaces_[id]->generation != generation ||
+                !contents->GetRenderWidgetHostView() ||
+                contents->GetRenderWidgetHostView()->GetViewBounds().size() != size ||
                 contents->GetLastCommittedURL() != url || !frame.has_value() ||
                 frame->bitmap.drawsNothing()) {
               Reject(std::move(reply), 409, "preview_changed"); return;
             }
-            const auto png = gfx::PNGCodec::FastEncodeBGRASkBitmap(frame->bitmap, true);
+            const auto png = jpeg ? gfx::JPEGCodec::Encode(frame->bitmap, 70)
+                                  : gfx::PNGCodec::FastEncodeBGRASkBitmap(frame->bitmap, true);
             if (!png) { Reject(std::move(reply), 409, "capture_failed"); return; }
             base::DictValue result;
-            result.Set("png", base::Base64Encode(*png));
+            result.Set(jpeg ? "jpeg" : "png", base::Base64Encode(*png));
             result.Set("width", frame->bitmap.width());
             result.Set("height", frame->bitmap.height());
             Respond(std::move(reply), 200, std::move(result));
-          }, weak_.GetWeakPtr(), id, weak_contents, url,
+          }, weak_.GetWeakPtr(), id, weak_contents, url, generation, size, jpeg,
              std::move(alive), std::move(reply))));
   }
   void CaptureFrame(TaskSpace& space, Alive alive, Reply reply) {
@@ -1496,7 +1595,7 @@ class PocParts : public TabStripModelObserver,
       return;
     }
     if (*action == "screenshot") {
-      CapturePreview(*space, std::move(alive), std::move(reply));
+      CapturePreview(*space, std::move(alive), std::move(reply), &*data);
       return;
     }
     if (*action == "tabs") {
@@ -1538,7 +1637,8 @@ class PocParts : public TabStripModelObserver,
       result.Set("dispatched", true);
       Respond(std::move(reply), 200, std::move(result)); return;
     }
-    if (*action == "snapshot" || *action == "clickRef" || *action == "fillRef") {
+    if (*action == "snapshot" || *action == "xiangqiSnapshot" ||
+        *action == "clickRef" || *action == "fillRef") {
       if (!space->Attach(contents)) {
         Reject(std::move(reply), 409, "target_busy"); return;
       }
@@ -1556,6 +1656,51 @@ class PocParts : public TabStripModelObserver,
                 current.remote_client.empty() && current.Contents() &&
                 current.Contents()->GetPrimaryMainFrame() == document.AsRenderFrameHostIfValid();
           }, weak_.GetWeakPtr(), id, control, generation, document);
+      if (*action == "xiangqiSnapshot") {
+        if (contents->GetLastCommittedURL().host() != "play.xiangqi.com" ||
+            contents->GetLastCommittedURL().path() != "/computer-play") {
+          Reject(std::move(reply), 403, "xiangqi_computer_page_required"); return;
+        }
+        // Read visible board geometry only. No React state, engine, or site APIs.
+        base::DictValue params;
+        params.Set("expression", R"JS((() => {
+          const grid=document.querySelector('#game-grid');
+          if(!grid)throw Error('board_not_visible');
+          if(grid.getAnimations({subtree:true}).some(a=>a.playState==='running'&&Number.isFinite(a.effect?.getComputedTiming().endTime)))throw Error('board_animating');
+          const center=e=>{const r=e.getBoundingClientRect();return {x:r.x+r.width/2,y:r.y+r.height/2,width:r.width,height:r.height};};
+          const squares=[...grid.querySelectorAll('.square')].map(e=>{
+            const name=[...e.classList].find(c=>/^(10|[1-9])-[a-i]$/.test(c));
+            if(!name)throw Error('unknown_square');
+            const [rank,file]=name.split('-');return {file:file.charCodeAt(0)-97,rank:Number(rank)-1,...center(e)};
+          });
+          if(squares.length!==90)throw Error('invalid_board');
+          const pieces=[...grid.querySelectorAll('.piece')].map(e=>{
+            const img=e.querySelector('img[alt]'), match=img?.alt.match(/^(rook|horse|elephant|advisor|king|cannon|pawn)-(red|brown|black)-/);
+            if(!match)throw Error('unknown_piece');
+            const c=center(e), square=squares.reduce((a,b)=>Math.hypot(a.x-c.x,a.y-c.y)<Math.hypot(b.x-c.x,b.y-c.y)?a:b);
+            if(Math.hypot(square.x-c.x,square.y-c.y)>square.width*.18)throw Error('board_animating');
+            return {kind:match[1],color:match[2]==='red'?'red':'black',file:square.file,rank:square.rank,clickable:getComputedStyle(e).cursor==='pointer',selected:e.classList.contains('selected-piece')};
+          });
+          const b=grid.closest('.board-bg').getBoundingClientRect();
+          const moveInput=document.querySelector('input.notranslate');
+          if(!moveInput||!/^\d+$/.test(moveInput.value))throw Error('move_index_unavailable');
+          const clip={x:b.x,y:b.y,width:b.width,height:b.height};
+          if(b.x<0||b.y<0||b.right>innerWidth||b.bottom>innerHeight)throw Error('board_outside_viewport');
+          return {pieces,squares,clip,ply:Number(moveInput.value),viewport:[innerWidth,innerHeight],
+            message:[...document.querySelectorAll('[role="dialog"]')].map(e=>e.innerText).join(' ').slice(0,600)};
+        })())JS");
+        params.Set("returnByValue", true); params.Set("timeout", 1000);
+        space->Request("Runtime.evaluate", std::move(params), base::BindOnce(
+          [](base::RepeatingCallback<bool()> valid, Alive alive, Reply reply,
+             base::DictValue message) {
+            if (!alive->load()) return;
+            if (!valid.Run()) { Reject(std::move(reply), 409, "stale_control"); return; }
+            const auto* value = message.FindDictByDottedPath("result.result.value");
+            if (!value) { Reject(std::move(reply), 409, "board_unavailable_or_animating"); return; }
+            Respond(std::move(reply), 200, value->Clone());
+          }, valid, std::move(alive), std::move(reply)));
+        return;
+      }
       if (*action == "snapshot") {
         space->Request("Accessibility.getFullAXTree", base::DictValue(),
           base::BindOnce([](base::WeakPtr<PocParts> self, int id,
@@ -1677,8 +1822,8 @@ class PocParts : public TabStripModelObserver,
         const auto x = data->FindDouble("x"), y = data->FindDouble("y");
         auto* view = contents->GetRenderWidgetHostView();
         if (!x || !y || !view || !std::isfinite(*x) || !std::isfinite(*y) ||
-            *x < 0 || *y < 0 || *x >= view->GetViewBounds().width() ||
-            *y >= view->GetViewBounds().height()) {
+            *x < 0 || *y < 0 || *x >= view->GetViewBounds().width() / CssScale(contents) ||
+            *y >= view->GetViewBounds().height() / CssScale(contents)) {
           Reject(std::move(reply), 400, "point_outside_viewport");
           return;
         }
@@ -1817,4 +1962,16 @@ class AgenticBrowserParts : public ChromeBrowserMainExtraParts,
 
 std::unique_ptr<ChromeBrowserMainExtraParts> CreateAgenticPocParts() {
   return std::make_unique<AgenticBrowserParts>();
+}
+
+base::DictValue AgenticModelSpaces(content::WebContents* settings) {
+  for(auto* controller:ModelControllers())if(controller->IsModelSettings(settings))return controller->ModelSpaces();
+  return base::DictValue().Set("spaces",base::ListValue());
+}
+void AgenticModelSpaceRequest(content::WebContents* settings,const std::string& space,base::DictValue request,base::OnceCallback<void(int,std::string)> reply) {
+  for(auto* controller:ModelControllers())if(controller->IsModelSettings(settings)){controller->ModelRequest(space,std::move(request),std::move(reply));return;}
+  Reject(std::move(reply),403,"main_settings_required");
+}
+void AgenticCancelModelControl(content::WebContents* settings,const std::string& space,const std::string& lease) {
+  for(auto* controller:ModelControllers())controller->CancelModel(space,lease);
 }
