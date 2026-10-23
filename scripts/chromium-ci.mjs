@@ -24,13 +24,26 @@ const capture=(cmd,args=[],cwd=root)=>run(cmd,args,{cwd,stdio:['ignore','pipe','
 const disk=await statfs(root),freeGiB=disk.bavail*disk.bsize/1024**3,ramGiB=totalmem()/1024**3;
 const errors=[];
 if(process.platform!=={macos:'darwin',windows:'win32',linux:'linux'}[os]||process.arch!==arch)errors.push('Runner OS/architecture must match the target natively.');
+if(os==='macos'&&process.platform==='darwin'&&process.env.GITHUB_ACTIONS==='true'&&process.env.RUNNER_ENVIRONMENT==='github-hosted') {
+ const installed=(await readdir('/Applications')).filter(name=>/^Xcode_\d+\.\d+(\.\d+)?\.app$/.test(name));
+ installed.sort((a,b)=>a.localeCompare(b,'en',{numeric:true}));
+ assert(installed.length,'No installed Xcode found');
+ process.env.DEVELOPER_DIR=join('/Applications',installed.at(-1),'Contents/Developer');
+}
 // An 8 GiB VM exposes slightly less usable RAM after system reservations.
 if(ramGiB<7.5)errors.push('An 8 GiB-class runner is required (32 GiB recommended).');
 const probes={};
 function probe(name,cmd,args){try{probes[name]=capture(cmd,args).slice(0,1600);}catch{errors.push(`${name} unavailable; install the pinned Chromium toolchain on this runner.`);}}
 probe('git','git',['--version']);
 probe('python',os==='windows'?'python':'python3',['--version']);
-if(os==='macos') {probe('xcode','xcodebuild',['-version']);probe('sdk','xcrun',['--sdk','macosx','--show-sdk-version']);probe('metal','xcrun',['metal','--version']);}
+if(os==='macos') {
+ probe('xcode','xcodebuild',['-version']);probe('sdk','xcrun',['--sdk','macosx','--show-sdk-version']);probe('metal','xcrun',['metal','--version']);
+ try {
+  const sdk=capture('xcrun',['--sdk','macosx','--show-sdk-path']);
+  for(const file of ['DarwinFoundation1.modulemap','DarwinFoundation2.modulemap','DarwinFoundation3.modulemap','libunwind.modulemap'])
+   if(!await access(join(sdk,'usr/include',file)).then(()=>true,()=>false))errors.push('Selected macOS SDK lacks '+file);
+ }catch{errors.push('Cannot inspect selected macOS SDK.');}
+}
 if(os==='windows') {
  const vswhere=join(process.env['ProgramFiles(x86)']||'C:/Program Files (x86)','Microsoft Visual Studio/Installer/vswhere.exe');
  probe('visualStudio',vswhere,['-latest','-products','*','-version','[18.0,19.0)','-requires','Microsoft.VisualStudio.Component.VC.Tools.x86.x64','-property','installationPath']);
@@ -55,7 +68,7 @@ if(process.env.RUNNER_ENVIRONMENT==='github-hosted') {
   assert(active.startsWith('/Applications/Xcode'),'Unexpected active Xcode path; refusing runner cleanup.');
   for(const name of await readdir('/Applications'))if(/^Xcode.*\.app$/.test(name)) {
    const app=join('/Applications',name),canonical=await realpath(app);
-   if(!active.startsWith(canonical+'/'))unused.push(app);
+   if(active!==canonical&&!active.startsWith(canonical+'/'))unused.push(app);
   }
   unused.push('/Library/Developer/CoreSimulator','/Users/runner/Library/Android/sdk');
  }else if(os==='linux')unused=['/usr/local/lib/android','/usr/share/dotnet','/opt/ghc','/usr/local/.ghcup','/opt/hostedtoolcache/CodeQL'];

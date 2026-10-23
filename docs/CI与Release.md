@@ -34,6 +34,8 @@
 
 仅在 `RUNNER_ENVIRONMENT=github-hosted` 的临时机器内，清理 Android、无关运行时等明确列出的预装目录；macOS 保留实际选中的 Xcode，清理其他 Xcode 和模拟器。自托管 runner 与本机不执行这些清理。继续浅克隆、无调试符号、关闭 ThinLTO；macOS 将应用移动到打包目录，阶段冒烟成功后删除本次输出目录中的中间文件，再压缩打包。
 
+macOS 托管 runner 先通过进程级 `DEVELOPER_DIR` 选择已预装的最高正式 Xcode，再执行预检和清理；下载源码前检查 Chromium 模块构建实际需要的四个 SDK modulemap 文件。构建步骤限时 350 分钟，为总计 360 分钟的 job 留出失败报告上传时间。
+
 默认 runner 为 `macos-15-intel`、`macos-15`、`windows-2025`、`windows-11-arm`、`ubuntu-24.04`、`ubuntu-24.04-arm`。可在仓库 Actions Variables 中为以下变量设置 JSON 标签数组，指向已配置、专用于此私有仓库的 runner：
 
 | 变量 | 本机目标 |
@@ -83,5 +85,14 @@ Windows/Linux 的人工界面、VNC、锁屏和真实模型使用仍需对应平
 - 当前无六目标产物，无 Release。发布 gate、安装包和新跨平台原生代码仍待资源到位后的真实构建／冒烟验证。没有注册自托管 runner、开通收费机器或改变本机浏览器。
 
 上述资源表是旧阈值下的历史结果，“磁盘不足”不代表已编译到磁盘耗尽。用户随后要求先优化现有 runner：先以 `build-one / macos-x64` 验证完整链路和磁盘峰值，再推进 `build-release` 六目标；不能只凭旧阈值要求增加机器。
+
+### 取消固定阈值后的第一次单目标尝试
+
+[运行 39897857971](https://github.com/CharlesXu/AgenticBrowser/actions/runs/39897857971)，源码 `c7c7c924a57fc07a17c37b78fd5dc3c87d78456f`，macOS x64，33 分 36 秒：
+
+- 初始可用磁盘 107.8 GiB；清理无关软件后约 192.7 GiB，释放约 84.9 GiB。
+- 完成源码、依赖、图标和补丁准备；到 GN 配置失败时，最低剩余 155.4 GiB，相对清理后的占用增长峰值为 37.3 GiB。该数值**仅覆盖准备和配置阶段，不是完整编译／打包峰值**。
+- 失败原因：默认 Xcode 16.4 / SDK 15.5 缺少 `DarwinFoundation1/2/3.modulemap`，而 Chromium `build/modules/BUILD.gn` 将这些文件作为输入。没有磁盘耗尽；编译、打包、冒烟尚未开始。
+- 修正：选择 runner 已有的较新正式 Xcode，并将 modulemap 检查提前；未采购机器、未更换运行中的本机工具链。随后继续同一目标的完整构建。
 
 官方依据：[GitHub runner 规格](https://docs.github.com/en/actions/reference/runners/github-hosted-runners)、[大型 runner 规格](https://docs.github.com/en/actions/reference/runners/larger-runners)、[Chromium Windows 构建](https://chromium.googlesource.com/chromium/src/+/156.0.8078.48/docs/windows_build_instructions.md)、[Linux 构建](https://chromium.googlesource.com/chromium/src/+/156.0.8078.48/docs/linux/build_instructions.md)、[macOS 构建](https://chromium.googlesource.com/chromium/src/+/156.0.8078.48/docs/mac_build_instructions.md)。

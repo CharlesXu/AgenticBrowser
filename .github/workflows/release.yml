@@ -77,6 +77,7 @@ jobs:
         run: npm ci --ignore-scripts
       - name: Chromium build, runtime smoke and package
         if: inputs.mode != 'preflight'
+        timeout-minutes: 350
         run: node scripts/measure-ci-disk.mjs ${{ matrix.os }}-${{ matrix.arch }} node scripts/chromium-ci.mjs build ${{ matrix.os }} ${{ matrix.arch }}
       - name: Upload resource and smoke reports
         if: always()
