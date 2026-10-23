@@ -70,7 +70,9 @@ if(process.env.RUNNER_ENVIRONMENT==='github-hosted') {
    const app=join('/Applications',name),canonical=await realpath(app);
    if(active!==canonical&&!active.startsWith(canonical+'/'))unused.push(app);
   }
-  unused.push('/Library/Developer/CoreSimulator','/Users/runner/Library/Android/sdk');
+  // simctl unmounts runtime disk images before removing them; rm would traverse read-only volumes.
+  try{run('xcrun',['simctl','runtime','delete','all'],{timeout:120000});}catch{console.warn('Could not remove optional simulator runtimes.');}
+  unused.push('/Users/runner/Library/Android/sdk');
  }else if(os==='linux')unused=['/usr/local/lib/android','/usr/share/dotnet','/opt/ghc','/usr/local/.ghcup','/opt/hostedtoolcache/CodeQL'];
  else unused=['C:/Android','C:/hostedtoolcache/windows/CodeQL'];
  for(const path of unused) {
