@@ -27,7 +27,7 @@
 
 ## 构建机器
 
-目前仓库没有注册自托管 runner。标准 GitHub runner 文档只保证 14 GB 磁盘，不能假定足以完整构建 Chromium。流水线要求开始 checkout 前至少 100 GiB 可用磁盘、8 GiB 内存；建议专用机器 200 GiB 可用磁盘、32 GiB 内存和 8 核以上。实际结果以预检报告为准，未通过时不开始大规模下载。
+目前仓库没有注册自托管 runner。标准 GitHub runner 文档只保证 14 GB 磁盘，不能假定足以完整构建 Chromium。流水线要求开始 checkout 前至少 100 GiB 可用磁盘、8 GiB 级内存（允许系统预留后可用内存降至 7.5 GiB）；建议专用机器 200 GiB 可用磁盘、32 GiB 内存和 8 核以上。实际结果以预检报告为准，未通过时不开始大规模下载。最低预检通过不保证能在 360 分钟 job 时限内完成编译。
 
 默认 runner 为 `macos-15-intel`、`macos-15`、`windows-2025`、`windows-11-arm`、`ubuntu-24.04`、`ubuntu-24.04-arm`。可在仓库 Actions Variables 中为以下变量设置 JSON 标签数组，指向已配置、专用于此私有仓库的 runner：
 
@@ -61,6 +61,22 @@ Windows/Linux 的人工界面、VNC、锁屏和真实模型使用仍需对应平
 - 工作流静态校验（actionlint）、项目语法/i18n/清单检查、模型协议边界检查通过。
 - 新冒烟脚本在本机已有 macOS ARM64 构建上通过；这验证脚本与现有运行时，不算新的六目标 Release 编译。
 - 图标处理改用跨平台 sharp；独立目录中的 PNG、Windows ICO、macOS 图标转换通过。空间模块从仅 macOS 编译扩大到三个桌面平台；Windows capability 文件增加当前用户专用 DACL。Windows/Linux 编译结果尚待 CI。
-- GitHub 执行链接与六目标实际预检结果在触发后补录。
+- 工作流及源码已推送私有 `main`。常规 [Project CI](https://github.com/CharlesXu/AgenticBrowser/actions/runs/39890884371) 通过，初次 [六目标预检](https://github.com/CharlesXu/AgenticBrowser/actions/runs/39890673466) 已运行。修正标称 8 GiB VM 被系统预留内存误拦截的问题，报告保留一位小数。
+- [第二轮执行](https://github.com/CharlesXu/AgenticBrowser/actions/runs/39890907427) 的实际资源如下（GiB），不是官方规格承诺；后续 runner 镜像可能改变可用空间。
+
+| 目标 | 可用磁盘 | 系统内存 | CPU | 资源与基础工具预检 |
+|---|---:|---:|---:|---|
+| macOS x64 | 107.1 | 14.0 | 4 | 通过 |
+| macOS arm64 | 43.0 | 14.0 | 5 | 磁盘不足 |
+| Windows x64 | 73.0 | 8.0 | 2 | 磁盘不足 |
+| Windows arm64 | 124.1 | 8.0 | 2 | 通过 |
+| Linux x64 | 13.1 | 7.8 | 2 | 磁盘不足 |
+| Linux arm64 | 35.1 | 7.7 | 2 | 磁盘不足 |
+
+- macOS x64 实际完成官方源码／依赖同步和品牌补丁应用，随后在 `gn gen` 前因缺少 `python3_bin_reldir.txt` 失败，尚未编译。原因是关闭 depot_tools 自动更新同时跳过首次 Python 初始化；脚本已补显式 `ensure_bootstrap`，Windows 对应 `bootstrap/win_tools.bat`，并先验证 Python wrapper 后再下载 Chromium。本机独立全新 depot_tools checkout 在关闭自动更新时初始化成功，wrapper 返回 Python 3.11.8；这只验证 macOS ARM64 上的初始化修正，未重新跑完整远端构建。
+- 用户随后确认“尚无，先完成流水线和资源检查”，已停止第二轮剩余构建；Windows ARM64 的构建步骤取消，四个资源不足的目标未进入源码下载。两个预检通过的目标均不计为构建成功。
+- 当前无六目标产物，无 Release。发布 gate、安装包和新跨平台原生代码仍待资源到位后的真实构建／冒烟验证。没有注册自托管 runner、开通收费机器或改变本机浏览器。
+
+下一步至少为 macOS ARM64、Windows x64、Linux x64、Linux ARM64 提供足够空间的原生 runner；建议六目标均使用上述 32 GiB／200 GiB 配置，减少超时与链接内存不足风险。通过对应仓库变量绑定后先运行 `preflight`，再运行 `build-release`。
 
 官方依据：[GitHub runner 规格](https://docs.github.com/en/actions/reference/runners/github-hosted-runners)、[大型 runner 规格](https://docs.github.com/en/actions/reference/runners/larger-runners)、[Chromium Windows 构建](https://chromium.googlesource.com/chromium/src/+/156.0.8078.48/docs/windows_build_instructions.md)、[Linux 构建](https://chromium.googlesource.com/chromium/src/+/156.0.8078.48/docs/linux/build_instructions.md)、[macOS 构建](https://chromium.googlesource.com/chromium/src/+/156.0.8078.48/docs/mac_build_instructions.md)。

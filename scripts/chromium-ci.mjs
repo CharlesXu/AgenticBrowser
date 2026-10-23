@@ -48,12 +48,15 @@ assert(!/[&|<>^%!"\r\n]/.test(root),'Use a simple CI checkout path.');
 await access(source).then(()=>{throw Error('Fresh isolated checkout required; will not replace an existing Chromium tree.');},()=>{});
 await mkdir('.tools',{recursive:true});await mkdir('.chromium',{recursive:true});
 run('git',['clone','--depth','1','https://chromium.googlesource.com/chromium/tools/depot_tools.git',depot]);
-run('git',['clone','--depth','1','--single-branch','--branch',upstream.version,upstream.repository,source]);
-assert.equal(capture('git',['rev-parse','HEAD'],source),upstream.revision,'Official tag/SHA mismatch');
 process.env.PATH=depot+(process.platform==='win32'?';':':')+process.env.PATH;
 process.env.DEPOT_TOOLS_UPDATE='0';process.env.DEPOT_TOOLS_WIN_TOOLCHAIN='0';
 process.env.UV_CONCURRENT_DOWNLOADS='4';
 const tool=name=>join(depot,name+(os==='windows'?'.bat':''));
+// Disabling self-update also skips the first-run Python bootstrap in gclient.
+run(os==='windows'?join(depot,'bootstrap/win_tools.bat'):join(depot,'ensure_bootstrap'));
+run(tool('python-bin/python3'),['--version']);
+run('git',['clone','--depth','1','--single-branch','--branch',upstream.version,upstream.repository,source]);
+assert.equal(capture('git',['rev-parse','HEAD'],source),upstream.revision,'Official tag/SHA mismatch');
 const jobs=String(Math.max(1,Math.min(availableParallelism(),Math.floor(ramGiB/2))));
 await writeFile('.chromium/.gclient',`solutions = [{"name":"src","url":${JSON.stringify(upstream.repository+'@'+upstream.revision)},"managed":False,"custom_deps":{},"custom_vars":{"checkout_configuration":"small"}}]\n`);
 run(tool('gclient'),['sync','--no-history','--shallow','--jobs=4'],{cwd:resolve('.chromium')});
