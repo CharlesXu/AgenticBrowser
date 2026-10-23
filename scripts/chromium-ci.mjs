@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import {cp,mkdir,readFile,writeFile,statfs,access,readdir,symlink} from 'node:fs/promises';
+import {cp,mkdir,readFile,writeFile,statfs,access,readdir,symlink,rename,rm,realpath} from 'node:fs/promises';
 import {execFileSync} from 'node:child_process';
 import {availableParallelism,totalmem} from 'node:os';
 import {resolve,relative,dirname,join,isAbsolute} from 'node:path';
@@ -24,7 +24,6 @@ const capture=(cmd,args=[],cwd=root)=>run(cmd,args,{cwd,stdio:['ignore','pipe','
 const disk=await statfs(root),freeGiB=disk.bavail*disk.bsize/1024**3,ramGiB=totalmem()/1024**3;
 const errors=[];
 if(process.platform!=={macos:'darwin',windows:'win32',linux:'linux'}[os]||process.arch!==arch)errors.push('Runner OS/architecture must match the target natively.');
-if(freeGiB<100)errors.push('At least 100 GiB free disk required before Chromium checkout (200 GiB recommended).');
 // An 8 GiB VM exposes slightly less usable RAM after system reservations.
 if(ramGiB<7.5)errors.push('An 8 GiB-class runner is required (32 GiB recommended).');
 const probes={};
@@ -46,6 +45,29 @@ assert.equal(process.env.GITHUB_ACTIONS,'true','Release build is restricted to a
 assert.equal(capture('git',['status','--porcelain','--untracked-files=no']),'','Release source must be committed.');
 assert(!/[&|<>^%!"\r\n]/.test(root),'Use a simple CI checkout path.');
 await access(source).then(()=>{throw Error('Fresh isolated checkout required; will not replace an existing Chromium tree.');},()=>{});
+const phase=async name=>{console.log('Build phase:',name);await writeFile(join(reportDir,`phase-${target}.txt`),name);};
+await phase('runner-cleanup');
+// Only ephemeral GitHub-hosted images: never remove software on a user's machine.
+if(process.env.RUNNER_ENVIRONMENT==='github-hosted') {
+ let unused=[];
+ if(os==='macos') {
+  const active=await realpath(process.env.DEVELOPER_DIR||capture('xcode-select',['-p']));
+  assert(active.startsWith('/Applications/Xcode'),'Unexpected active Xcode path; refusing runner cleanup.');
+  for(const name of await readdir('/Applications'))if(/^Xcode.*\.app$/.test(name)) {
+   const app=join('/Applications',name),canonical=await realpath(app);
+   if(!active.startsWith(canonical+'/'))unused.push(app);
+  }
+  unused.push('/Library/Developer/CoreSimulator','/Users/runner/Library/Android/sdk');
+ }else if(os==='linux')unused=['/usr/local/lib/android','/usr/share/dotnet','/opt/ghc','/usr/local/.ghcup','/opt/hostedtoolcache/CodeQL'];
+ else unused=['C:/Android','C:/hostedtoolcache/windows/CodeQL'];
+ for(const path of unused) {
+  if(!await access(path).then(()=>true,()=>false))continue;
+  console.log('Remove unused hosted-runner software:',path);
+  if(os==='windows')await rm(path,{recursive:true,force:true}).catch(error=>console.warn(error.message));
+  else try{run('sudo',['-n','rm','-rf','--',path]);}catch{console.warn('Could not completely remove optional runner software:',path);}
+ }
+}
+await phase('checkout');
 await mkdir('.tools',{recursive:true});await mkdir('.chromium',{recursive:true});
 run('git',['clone','--depth','1','https://chromium.googlesource.com/chromium/tools/depot_tools.git',depot]);
 process.env.PATH=depot+(process.platform==='win32'?';':':')+process.env.PATH;
@@ -60,6 +82,7 @@ assert.equal(capture('git',['rev-parse','HEAD'],source),upstream.revision,'Offic
 const jobs=String(Math.max(1,Math.min(availableParallelism(),Math.floor(ramGiB/2))));
 await writeFile('.chromium/.gclient',`solutions = [{"name":"src","url":${JSON.stringify(upstream.repository+'@'+upstream.revision)},"managed":False,"custom_deps":{},"custom_vars":{"checkout_configuration":"small"}}]\n`);
 run(tool('gclient'),['sync','--no-history','--shallow','--jobs=4'],{cwd:resolve('.chromium')});
+await phase('configure');
 if(os==='linux')run('sudo',['-n','bash','build/install-build-deps.sh','--no-prompt','--no-arm','--no-chromeos-fonts'],{cwd:source});
 run(process.execPath,['scripts/apply-chromium-poc.mjs']);
 const output=resolve(source,`out/AgenticRelease-${arch}`),outRelative=relative(source,output).replaceAll('\\','/');
@@ -67,12 +90,14 @@ await mkdir(output,{recursive:true});
 await writeFile(join(output,'args.gn'),`target_os = "${{macos:'mac',windows:'win',linux:'linux'}[os]}"\ntarget_cpu = "${arch}"\nis_debug = false\nis_component_build = false\nis_official_build = false\nsymbol_level = 0\nblink_symbol_level = 0\nv8_symbol_level = 0\nchrome_pgo_phase = 0\nuse_thin_lto = false\nuse_remoteexec = false\n${os==='macos'?'use_system_xcode = true\n':''}`);
 run(tool('gn'),['gen',outRelative],{cwd:source});
 const targets=os==='linux'?['chrome','chrome_sandbox']:['chrome'];
+await phase('compile');
 run(tool('autoninja'),['-C',outRelative,'-j',jobs,...targets],{cwd:source});
+await phase('stage');
 await mkdir(dist,{recursive:true});
 const stage=resolve('.runtime/package',target,'Agentic Browser');await mkdir(stage,{recursive:true});
 let executable;
 if(os==='macos') {
- const app=join(stage,'Agentic Browser.app');await cp(join(output,'Agentic Browser.app'),app,{recursive:true,verbatimSymlinks:true});
+ const app=join(stage,'Agentic Browser.app');await rename(join(output,'Agentic Browser.app'),app);
  executable=join(app,'Contents/MacOS/Agentic Browser');run('codesign',['--verify','--deep','--strict',app]);
 } else {
  const dependencies=capture(tool('gn'),['desc',outRelative,'//chrome:chrome','runtime_deps'],source).split(/\r?\n/).map(x=>x.trim()).filter(Boolean);
@@ -90,8 +115,12 @@ if(os==='macos') {assert.equal(binary.readUInt32LE(0),0xfeedfacf);machine=binary
 else if(os==='linux'){assert.equal(binary.subarray(0,4).toString('hex'),'7f454c46');machine=binary.readUInt16LE(18);assert.equal(machine,arch==='arm64'?183:62);}
 else {const offset=binary.readUInt32LE(0x3c);assert.equal(binary.subarray(offset,offset+4).toString('hex'),'50450000');machine=binary.readUInt16LE(offset+4);assert.equal(machine,arch==='arm64'?0xaa64:0x8664);}
 const smokeArgs=['scripts/smoke-release.mjs',executable,join(reportDir,`smoke-${target}.json`)];
+await phase('smoke');
 if(os==='linux')run('xvfb-run',['-a',process.execPath,...smokeArgs]);
 else run(process.execPath,smokeArgs);
+// Staged runtime passed smoke; intermediate objects are no longer needed for packaging.
+await rm(output,{recursive:true,force:true});
+await phase('package');
 await cp(join(source,'LICENSE'),join(stage,'LICENSE'));
 await cp('NOTICE.md',join(stage,'NOTICE.md'));
 await cp('licenses',join(stage,'licenses'),{recursive:true});
@@ -108,4 +137,5 @@ assert(contents.length>10_000_000,'Unexpectedly small browser package');
 await writeFile(join(dist,'manifest.json'),JSON.stringify({target,version,sourceCommit:sha,upstream,asset:asset.split(/[\\/]/).at(-1),bytes:contents.length,sha256,binaryArchitecture:arch,componentBuild:false,smoke:'passed',signed:false},null,2)+'\n');
 await writeFile(asset+'.sha256',sha256+'  '+asset.split(/[\\/]/).at(-1)+'\n');
 await cp(join(reportDir,`smoke-${target}.json`),join(dist,'smoke.json'));
+await phase('complete');
 console.log(JSON.stringify({target,asset,sha256,smoke:'passed'}));

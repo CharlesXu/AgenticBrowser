@@ -7,6 +7,7 @@
 [Browser Release](https://github.com/CharlesXu/AgenticBrowser/actions/workflows/release.yml) 仅手动触发，支持：
 
 - `preflight`：默认模式。实际检查六种 runner 的架构、内存、磁盘和基础工具链，不下载 Chromium。
+- `build-one`：只构建所选 `target`，完成编译、运行冒烟、打包并上传 artifact，不发布 Release。默认 `macos-x64`，用于先测完整构建的实际磁盘峰值。
 - `build-release`：在同一资源检查通过后，拉取 `chromium/upstream.json` 中的官方 tag，核对 SHA，同步依赖、应用源码与品牌、构建、检查实际二进制架构、运行小范围冒烟、打包。
 
 每个任务使用独立 checkout 和 `out/AgenticRelease-<arch>`，`is_component_build=false`、`is_debug=false`，不使用本机运行中的 component build 或 Profile。不同 runner 可以并行；同一发布工作流不重叠，不缓存整个 Chromium 源码树。
@@ -27,7 +28,11 @@
 
 ## 构建机器
 
-目前仓库没有注册自托管 runner。标准 GitHub runner 文档只保证 14 GB 磁盘，不能假定足以完整构建 Chromium。流水线要求开始 checkout 前至少 100 GiB 可用磁盘、8 GiB 级内存（允许系统预留后可用内存降至 7.5 GiB）；建议专用机器 200 GiB 可用磁盘、32 GiB 内存和 8 核以上。实际结果以预检报告为准，未通过时不开始大规模下载。最低预检通过不保证能在 360 分钟 job 时限内完成编译。
+目前使用已有 GitHub 托管 runner，不新增机器。已取消原先未经完整编译实测的 100 GiB 磁盘拦截；磁盘预检只报告可用量。仍检查目标架构、基础工具链和 8 GiB 级内存（允许系统预留后可用内存降至 7.5 GiB）。GitHub 托管 job 限时 360 分钟，预检通过不等于编译一定能完成。
+
+构建期间每 5 秒记录工作目录所在文件系统的剩余磁盘，报告 `disk-<target>.json` 保留最低剩余、相对构建开始的峰值增长、文件系统使用峰值及阶段采样。数字包含系统后台活动，短于采样间隔的尖峰可能遗漏；失败也保留报告。
+
+仅在 `RUNNER_ENVIRONMENT=github-hosted` 的临时机器内，清理 Android、无关运行时等明确列出的预装目录；macOS 保留实际选中的 Xcode，清理其他 Xcode 和模拟器。自托管 runner 与本机不执行这些清理。继续浅克隆、无调试符号、关闭 ThinLTO；macOS 将应用移动到打包目录，阶段冒烟成功后删除本次输出目录中的中间文件，再压缩打包。
 
 默认 runner 为 `macos-15-intel`、`macos-15`、`windows-2025`、`windows-11-arm`、`ubuntu-24.04`、`ubuntu-24.04-arm`。可在仓库 Actions Variables 中为以下变量设置 JSON 标签数组，指向已配置、专用于此私有仓库的 runner：
 
@@ -77,6 +82,6 @@ Windows/Linux 的人工界面、VNC、锁屏和真实模型使用仍需对应平
 - 用户随后确认“尚无，先完成流水线和资源检查”，已停止第二轮剩余构建；Windows ARM64 的构建步骤取消，四个资源不足的目标未进入源码下载。两个预检通过的目标均不计为构建成功。
 - 当前无六目标产物，无 Release。发布 gate、安装包和新跨平台原生代码仍待资源到位后的真实构建／冒烟验证。没有注册自托管 runner、开通收费机器或改变本机浏览器。
 
-下一步至少为 macOS ARM64、Windows x64、Linux x64、Linux ARM64 提供足够空间的原生 runner；建议六目标均使用上述 32 GiB／200 GiB 配置，减少超时与链接内存不足风险。通过对应仓库变量绑定后先运行 `preflight`，再运行 `build-release`。
+上述资源表是旧阈值下的历史结果，“磁盘不足”不代表已编译到磁盘耗尽。用户随后要求先优化现有 runner：先以 `build-one / macos-x64` 验证完整链路和磁盘峰值，再推进 `build-release` 六目标；不能只凭旧阈值要求增加机器。
 
 官方依据：[GitHub runner 规格](https://docs.github.com/en/actions/reference/runners/github-hosted-runners)、[大型 runner 规格](https://docs.github.com/en/actions/reference/runners/larger-runners)、[Chromium Windows 构建](https://chromium.googlesource.com/chromium/src/+/156.0.8078.48/docs/windows_build_instructions.md)、[Linux 构建](https://chromium.googlesource.com/chromium/src/+/156.0.8078.48/docs/linux/build_instructions.md)、[macOS 构建](https://chromium.googlesource.com/chromium/src/+/156.0.8078.48/docs/mac_build_instructions.md)。

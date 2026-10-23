@@ -5,8 +5,13 @@ on:
       mode:
         description: Resource preflight, or build all six targets and publish a private PoC release
         type: choice
-        options: [preflight, build-release]
+        options: [preflight, build-one, build-release]
         default: preflight
+      target:
+        description: Target for build-one (no Release is published)
+        type: choice
+        options: [macos-x64, macos-arm64, windows-x64, windows-arm64, linux-x64, linux-arm64]
+        default: macos-x64
 permissions:
   contents: read
 concurrency:
@@ -17,6 +22,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.version.outputs.version }}
+      matrix: ${{ steps.matrix.outputs.matrix }}
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-node@v6
@@ -33,36 +39,28 @@ jobs:
         run: |
           test "$(gh api repos/CharlesXu/AgenticBrowser --jq .private)" = true
           node -e "const fs=require('fs');const v=require('./package.json').version;if(!/^\d+\.\d+\.\d+$/.test(v))throw Error('Invalid version');fs.appendFileSync(process.env.GITHUB_OUTPUT,'version='+v+'\n')"
+      - name: Select build targets
+        id: matrix
+        env:
+          BUILD_MODE: ${{ inputs.mode }}
+          BUILD_TARGET: ${{ inputs.target }}
+        run: |
+          node --input-type=module <<'JS'
+          import {appendFileSync} from 'node:fs';
+          let include = [
+            ['macos', 'x64', 'macos-15-intel'], ['macos', 'arm64', 'macos-15'],
+            ['windows', 'x64', 'windows-2025'], ['windows', 'arm64', 'windows-11-arm'],
+            ['linux', 'x64', 'ubuntu-24.04'], ['linux', 'arm64', 'ubuntu-24.04-arm'],
+          ].map(([os, arch, runner]) => ({os, arch, runner, variable: `CHROMIUM_RUNNER_${os}_${arch}`.toUpperCase()}));
+          if (process.env.BUILD_MODE === 'build-one') include = include.filter(t => `${t.os}-${t.arch}` === process.env.BUILD_TARGET);
+          if (!include.length) throw Error('Unknown build target');
+          appendFileSync(process.env.GITHUB_OUTPUT, `matrix=${JSON.stringify({include})}\n`);
+          JS
   build:
     needs: validate
     strategy:
       fail-fast: false
-      matrix:
-        include:
-          - os: macos
-            arch: x64
-            runner: macos-15-intel
-            variable: CHROMIUM_RUNNER_MACOS_X64
-          - os: macos
-            arch: arm64
-            runner: macos-15
-            variable: CHROMIUM_RUNNER_MACOS_ARM64
-          - os: windows
-            arch: x64
-            runner: windows-2025
-            variable: CHROMIUM_RUNNER_WINDOWS_X64
-          - os: windows
-            arch: arm64
-            runner: windows-11-arm
-            variable: CHROMIUM_RUNNER_WINDOWS_ARM64
-          - os: linux
-            arch: x64
-            runner: ubuntu-24.04
-            variable: CHROMIUM_RUNNER_LINUX_X64
-          - os: linux
-            arch: arm64
-            runner: ubuntu-24.04-arm
-            variable: CHROMIUM_RUNNER_LINUX_ARM64
+      matrix: ${{ fromJSON(needs.validate.outputs.matrix) }}
     runs-on: ${{ fromJSON(vars[matrix.variable] || format('["{0}"]', matrix.runner)) }}
     timeout-minutes: 360
     name: ${{ matrix.os }}-${{ matrix.arch }}
@@ -75,11 +73,11 @@ jobs:
           node-version: '24'
       - name: Runner resource and toolchain preflight
         run: node scripts/chromium-ci.mjs preflight ${{ matrix.os }} ${{ matrix.arch }}
-      - if: inputs.mode == 'build-release'
+      - if: inputs.mode != 'preflight'
         run: npm ci --ignore-scripts
       - name: Chromium build, runtime smoke and package
-        if: inputs.mode == 'build-release'
-        run: node scripts/chromium-ci.mjs build ${{ matrix.os }} ${{ matrix.arch }}
+        if: inputs.mode != 'preflight'
+        run: node scripts/measure-ci-disk.mjs ${{ matrix.os }}-${{ matrix.arch }} node scripts/chromium-ci.mjs build ${{ matrix.os }} ${{ matrix.arch }}
       - name: Upload resource and smoke reports
         if: always()
         uses: actions/upload-artifact@v4
@@ -89,7 +87,7 @@ jobs:
           if-no-files-found: error
           retention-days: 7
       - name: Upload verified browser package
-        if: success() && inputs.mode == 'build-release'
+        if: success() && inputs.mode != 'preflight'
         uses: actions/upload-artifact@v4
         with:
           name: browser-${{ matrix.os }}-${{ matrix.arch }}
