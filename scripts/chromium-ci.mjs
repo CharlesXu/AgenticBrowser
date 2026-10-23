@@ -25,7 +25,8 @@ const disk=await statfs(root),freeGiB=disk.bavail*disk.bsize/1024**3,ramGiB=tota
 const errors=[];
 if(process.platform!=={macos:'darwin',windows:'win32',linux:'linux'}[os]||process.arch!==arch)errors.push('Runner OS/architecture must match the target natively.');
 if(freeGiB<100)errors.push('At least 100 GiB free disk required before Chromium checkout (200 GiB recommended).');
-if(ramGiB<8)errors.push('At least 8 GiB RAM required (32 GiB recommended).');
+// An 8 GiB VM exposes slightly less usable RAM after system reservations.
+if(ramGiB<7.5)errors.push('An 8 GiB-class runner is required (32 GiB recommended).');
 const probes={};
 function probe(name,cmd,args){try{probes[name]=capture(cmd,args).slice(0,1600);}catch{errors.push(`${name} unavailable; install the pinned Chromium toolchain on this runner.`);}}
 probe('git','git',['--version']);
@@ -36,7 +37,7 @@ if(os==='windows') {
  probe('visualStudio',vswhere,['-latest','-products','*','-version','[18.0,19.0)','-requires','Microsoft.VisualStudio.Component.VC.Tools.x86.x64','-property','installationPath']);
  if(!probes.visualStudio)errors.push('Visual Studio 2026 C++ tools required; see pinned docs/windows_build_instructions.md.');
 }
-const preflight={target,sourceCommit:sha,upstream,freeGiB:Math.round(freeGiB),ramGiB:Math.round(ramGiB),cpus:availableParallelism(),probes,errors};
+const preflight={target,sourceCommit:sha,upstream,freeGiB:Math.round(freeGiB*10)/10,ramGiB:Math.round(ramGiB*10)/10,cpus:availableParallelism(),probes,errors};
 await writeFile(join(reportDir,`preflight-${target}.json`),JSON.stringify(preflight,null,2)+'\n');
 console.log(JSON.stringify(preflight,null,2));
 if(errors.length)throw Error('Runner preflight failed; no Chromium download or build started.');
