@@ -75,10 +75,27 @@ jobs:
         run: node scripts/chromium-ci.mjs preflight ${{ matrix.os }} ${{ matrix.arch }}
       - if: inputs.mode != 'preflight'
         run: npm ci --ignore-scripts
+      - name: Install isolated compiler cache
+        if: inputs.mode != 'preflight'
+        run: node scripts/setup-ci-ccache.mjs
+      - name: Restore completed compilation work
+        if: inputs.mode != 'preflight'
+        id: cache
+        uses: actions/cache/restore@v4
+        with:
+          path: .runtime/ccache
+          key: ccache-v1-${{ matrix.os }}-${{ matrix.arch }}-${{ hashFiles('chromium/upstream.json') }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: ccache-v1-${{ matrix.os }}-${{ matrix.arch }}-${{ hashFiles('chromium/upstream.json') }}-
       - name: Chromium build, runtime smoke and package
         if: inputs.mode != 'preflight'
-        timeout-minutes: 350
+        timeout-minutes: 330
         run: node scripts/measure-ci-disk.mjs ${{ matrix.os }}-${{ matrix.arch }} node scripts/chromium-ci.mjs build ${{ matrix.os }} ${{ matrix.arch }}
+      - name: Save completed compilation work even after failure
+        if: always() && inputs.mode != 'preflight' && steps.cache.outcome == 'success'
+        uses: actions/cache/save@v4
+        with:
+          path: .runtime/ccache
+          key: ${{ steps.cache.outputs.cache-primary-key }}
       - name: Upload resource and smoke reports
         if: always()
         uses: actions/upload-artifact@v4

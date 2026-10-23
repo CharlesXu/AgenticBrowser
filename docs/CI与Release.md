@@ -34,7 +34,9 @@
 
 仅在 `RUNNER_ENVIRONMENT=github-hosted` 的临时机器内，清理 Android、无关运行时等明确列出的预装目录；macOS 保留实际选中的 Xcode，清理其他 Xcode，使用 `simctl runtime delete all` 卸载并删除模拟器运行时，避免递归遍历只读挂载卷。自托管 runner 与本机不执行这些清理。继续浅克隆、无调试符号、关闭 ThinLTO；macOS 将应用移动到打包目录，阶段冒烟成功后删除本次输出目录中的中间文件，再压缩打包。
 
-macOS 托管 runner 先通过进程级 `DEVELOPER_DIR` 选择已预装的最高正式 Xcode，再执行预检和清理；下载源码前检查 Chromium 模块构建实际需要的四个 SDK modulemap 文件。构建步骤限时 350 分钟，为总计 360 分钟的 job 留出失败报告上传时间。
+macOS 托管 runner 先通过进程级 `DEVELOPER_DIR` 选择已预装的最高正式 Xcode，再执行预检和清理；下载源码前检查 Chromium 模块构建实际需要的四个 SDK modulemap 文件。
+
+单次编译最多 285 分钟，整个下载／构建／打包步骤最多 330 分钟，为总计 360 分钟的 job 留出缓存与报告上传时间。使用独立 ccache 4.14.2，校验官方资产 SHA-256，缓存上限 8 GiB；只缓存编译结果，不缓存 Profile、凭据或整个源码树。Clang 模块使用 depend 模式与官方文档要求的 `modules,time_macros` 设置，编译器按内容校验。缓存按平台、架构及上游配置隔离；每次使用新 key，失败也保存，以便下次重跑同一目标复用。达到时间片仍记为未完成，不跳过最终链接、原生冒烟或发布门槛。Actions 缓存可能被配额淘汰，实际命中和用量记录在 `cache-<target>.json`；没有增购缓存容量或机器。
 
 默认 runner 为 `macos-15-intel`、`macos-15`、`windows-2025`、`windows-11-arm`、`ubuntu-24.04`、`ubuntu-24.04-arm`。可在仓库 Actions Variables 中为以下变量设置 JSON 标签数组，指向已配置、专用于此私有仓库的 runner：
 
@@ -95,4 +97,14 @@ Windows/Linux 的人工界面、VNC、锁屏和真实模型使用仍需对应平
 - 失败原因：默认 Xcode 16.4 / SDK 15.5 缺少 `DarwinFoundation1/2/3.modulemap`，而 Chromium `build/modules/BUILD.gn` 将这些文件作为输入。没有磁盘耗尽；编译、打包、冒烟尚未开始。
 - 修正：选择 runner 已有的较新正式 Xcode，并将 modulemap 检查提前；未采购机器、未更换运行中的本机工具链。随后继续同一目标的完整构建。
 
-官方依据：[GitHub runner 规格](https://docs.github.com/en/actions/reference/runners/github-hosted-runners)、[大型 runner 规格](https://docs.github.com/en/actions/reference/runners/larger-runners)、[Chromium Windows 构建](https://chromium.googlesource.com/chromium/src/+/156.0.8078.48/docs/windows_build_instructions.md)、[Linux 构建](https://chromium.googlesource.com/chromium/src/+/156.0.8078.48/docs/linux/build_instructions.md)、[macOS 构建](https://chromium.googlesource.com/chromium/src/+/156.0.8078.48/docs/mac_build_instructions.md)。
+### 第二次单目标尝试：磁盘充足，达到任务时限
+
+[运行 39901246954](https://github.com/CharlesXu/AgenticBrowser/actions/runs/39901246954)，源码 `5df670c641dae5a031c08a9d581096365230b43d`，macOS x64：
+
+- 已使用 Xcode 26.3 / SDK 26.2，源码同步和 GN 配置成功，进入真实 C++ 编译。
+- 初始可用 107.1 GiB，清理后 192.9 GiB；最低剩余 157.3 GiB，相对清理后占用增长峰值 35.6 GiB。仍是**未完成编译的观测值，不是完整编译／打包峰值**。
+- 编译约 5 小时 19 分钟，日志进度 18,531 / 79,388，约 23% 的构建步骤；不是时间完成百分比。构建步骤达到原设 350 分钟时限时仍正常编译。没有磁盘耗尽，也没有浏览器包、冒烟结果或 Release。
+- 修正 macOS 清理方式，使用 `simctl` 卸载模拟器，消除递归删除只读挂载卷产生的大量错误日志。
+- 下一次采用编译缓存跨轮复用。隔离的小型 Clang 模块验证确认同内容文件可命中、头文件变化会重编；使用现有 Chromium `base/logging.cc` 的真实命令，仅将输出改到独立临时目录，首次 0.92 秒、第二次缓存命中 0.01 秒。这只证明本机缓存路径可用，完整 CI 命中率和完成时间仍待验证，没有更改运行中的浏览器文件。
+
+官方依据：[GitHub runner 规格](https://docs.github.com/en/actions/reference/runners/github-hosted-runners)、[Actions 缓存](https://docs.github.com/en/actions/reference/workflows-and-actions/dependency-caching)、[ccache 手册](https://ccache.dev/manual/latest.html)、[Chromium Windows 构建](https://chromium.googlesource.com/chromium/src/+/156.0.8078.48/docs/windows_build_instructions.md)、[Linux 构建](https://chromium.googlesource.com/chromium/src/+/156.0.8078.48/docs/linux/build_instructions.md)、[macOS 构建](https://chromium.googlesource.com/chromium/src/+/156.0.8078.48/docs/mac_build_instructions.md)。

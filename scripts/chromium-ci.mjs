@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import {cp,mkdir,readFile,writeFile,statfs,access,readdir,symlink,rename,rm,realpath} from 'node:fs/promises';
-import {execFileSync} from 'node:child_process';
+import {execFileSync,spawn} from 'node:child_process';
 import {availableParallelism,totalmem} from 'node:os';
 import {resolve,relative,dirname,join,isAbsolute} from 'node:path';
 import {createHash} from 'node:crypto';
@@ -21,6 +21,32 @@ function run(cmd,args=[],options={}) {
     {cwd:root,stdio:'inherit',...options,...(bat?{shell:true}:{})});
 }
 const capture=(cmd,args=[],cwd=root)=>run(cmd,args,{cwd,stdio:['ignore','pipe','pipe'],encoding:'utf8'}).trim();
+async function compile(args) {
+ // Stop gracefully before the hosted job limit so the completed object cache can be saved.
+ const cmd=tool('autoninja'),windows=process.platform==='win32';
+ const child=spawn(windows?`"${cmd}"`:cmd,windows?args.map(arg=>`"${arg}"`):args,
+  {cwd:source,stdio:'inherit',detached:!windows,shell:windows});
+ let timedOut=false,force;
+ const timer=setTimeout(()=>{
+  timedOut=true;
+  console.warn('::warning::Compile time slice ended; preserving ccache for the next run. This is not a completed build.');
+  if(windows){try{run('taskkill',['/PID',String(child.pid),'/T','/F']);}catch{}}
+  else {
+   try{process.kill(-child.pid,'SIGINT');}catch{}
+   force=setTimeout(()=>{try{process.kill(-child.pid,'SIGKILL');}catch{}},60000);
+  }
+ },285*60000);
+ try {
+  const code=await new Promise((resolve,reject)=>{child.once('error',reject);child.once('close',resolve);});
+  assert(!timedOut,'Compilation paused at the time limit; rerun this target to reuse the saved ccache.');
+  assert.equal(code,0,'Chromium compilation failed');
+ }finally {
+  clearTimeout(timer);clearTimeout(force);
+  const stats=capture('ccache',['--show-stats','--verbose']);
+  console.log(stats);
+  await writeFile(join(reportDir,`cache-${target}.json`),JSON.stringify({target,sourceCommit:sha,timedOut,stats},null,2)+'\n');
+ }
+}
 const disk=await statfs(root),freeGiB=disk.bavail*disk.bsize/1024**3,ramGiB=totalmem()/1024**3;
 const errors=[];
 if(process.platform!=={macos:'darwin',windows:'win32',linux:'linux'}[os]||process.arch!==arch)errors.push('Runner OS/architecture must match the target natively.');
@@ -100,13 +126,15 @@ run(tool('gclient'),['sync','--no-history','--shallow','--jobs=4'],{cwd:resolve(
 await phase('configure');
 if(os==='linux')run('sudo',['-n','bash','build/install-build-deps.sh','--no-prompt','--no-arm','--no-chromeos-fonts'],{cwd:source});
 run(process.execPath,['scripts/apply-chromium-poc.mjs']);
+process.env.CCACHE_BASEDIR=source;
+run('ccache',['--zero-stats']);
 const output=resolve(source,`out/AgenticRelease-${arch}`),outRelative=relative(source,output).replaceAll('\\','/');
 await mkdir(output,{recursive:true});
-await writeFile(join(output,'args.gn'),`target_os = "${{macos:'mac',windows:'win',linux:'linux'}[os]}"\ntarget_cpu = "${arch}"\nis_debug = false\nis_component_build = false\nis_official_build = false\nsymbol_level = 0\nblink_symbol_level = 0\nv8_symbol_level = 0\nchrome_pgo_phase = 0\nuse_thin_lto = false\nuse_remoteexec = false\n${os==='macos'?'use_system_xcode = true\n':''}`);
+await writeFile(join(output,'args.gn'),`target_os = "${{macos:'mac',windows:'win',linux:'linux'}[os]}"\ntarget_cpu = "${arch}"\nis_debug = false\nis_component_build = false\nis_official_build = false\nsymbol_level = 0\nblink_symbol_level = 0\nv8_symbol_level = 0\nchrome_pgo_phase = 0\nuse_thin_lto = false\nuse_remoteexec = false\ncc_wrapper = "ccache"\n${os==='macos'?'use_system_xcode = true\n':''}`);
 run(tool('gn'),['gen',outRelative],{cwd:source});
 const targets=os==='linux'?['chrome','chrome_sandbox']:['chrome'];
 await phase('compile');
-run(tool('autoninja'),['-C',outRelative,'-j',jobs,...targets],{cwd:source});
+await compile(['-C',outRelative,'-j',jobs,...targets]);
 await phase('stage');
 await mkdir(dist,{recursive:true});
 const stage=resolve('.runtime/package',target,'Agentic Browser');await mkdir(stage,{recursive:true});
