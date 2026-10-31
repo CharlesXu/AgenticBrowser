@@ -40,7 +40,7 @@ macOS 托管 runner 先通过进程级 `DEVELOPER_DIR` 选择已预装的最高�
 
 单次编译最多 285 分钟，整个下载／构建／打包步骤最多 330 分钟，为总计 360 分钟的 job 留出缓存与报告上传时间。使用独立 ccache 4.14.2，校验官方资产 SHA-256，缓存上限 8 GiB；只缓存编译结果，不缓存 Profile、凭据或整个源码树。Clang 模块使用 depend 模式与官方文档要求的 `modules,time_macros` 设置，编译器按内容校验。缓存按平台、架构及上游配置隔离；每次使用新 key，失败也保存，以便下次重跑同一目标复用。达到时间片仍记为未完成，不跳过最终链接、原生冒烟或发布门槛。Actions 缓存可能被配额淘汰，实际命中和用量记录在 `cache-<target>.json`；没有增购缓存容量或机器。
 
-默认 runner 为 `macos-15-intel`、`macos-15`、`windows-2025`、`windows-11-arm`、`ubuntu-24.04`、`ubuntu-24.04-arm`。可在仓库 Actions Variables 中为以下变量设置 JSON 标签数组，指向已配置、专用于此仓库的 runner：
+默认构建 runner 为 `macos-15-intel`、`macos-15`、`windows-2025`、`windows-11-arm` 和 `ubuntu-24.04`。Linux ARM64 在 x64 上交叉编译，再在 `ubuntu-24.04-arm` 上原生启动验收。可在仓库 Actions Variables 中为以下变量设置 JSON 标签数组，指向已配置、专用于此仓库的 runner：
 
 | 变量 | 本机目标 |
 |---|---|
@@ -49,14 +49,14 @@ macOS 托管 runner 先通过进程级 `DEVELOPER_DIR` 选择已预装的最高�
 | `CHROMIUM_RUNNER_WINDOWS_X64` | Windows x64 |
 | `CHROMIUM_RUNNER_WINDOWS_ARM64` | Windows arm64 |
 | `CHROMIUM_RUNNER_LINUX_X64` | Linux x64 |
-| `CHROMIUM_RUNNER_LINUX_ARM64` | Linux arm64 |
+| `CHROMIUM_RUNNER_LINUX_ARM64` | Linux x64 构建机，产出 arm64 |
 
-例如 `CHROMIUM_RUNNER_LINUX_ARM64` 的值为 `["self-hosted","Linux","ARM64","chromium"]`。不要绑定日常开发 checkout；首次源码与依赖下载较大。当前脚本要求在对应原生架构上编译及启动，不将交叉编译当作原生启动验证。
+不要绑定日常开发 checkout；首次源码与依赖下载较大。五个目标在对应原生架构上编译及启动；Linux ARM64 使用固定上游提供的 x64 Clang 和 gperf，并通过 `.gclient` 的 `target_cpu` 同步 ARM64 sysroot，不改上游 DEPS。交叉编译包先上传为 `candidate-linux-arm64`，清单记为 `smoke: pending`。全部构建完成后，独立 ARM64 runner 校验同一提交、上游配置、包散列和 ELF 架构，运行三个空间等原生冒烟；通过后保留原压缩包字节，仅补齐通过清单和报告，再上传 `browser-linux-arm64`。发布依赖这一任务，不把交叉编译成功计作原生启动通过。
 
 工具链：
 
 - macOS：完整 Xcode、macOS SDK、Metal 工具；通过 `DEVELOPER_DIR` 或 `xcode-select` 正确选择。默认只有 Command Line Tools 时不会通过。
-- Windows：固定 Chromium 源码要求 Visual Studio 2026 C++、ATL/MFC；ARM64 还需 ARM64 工具与库。Windows SDK 10.0.28000.2270、相应 Debugging Tools 及 x64 调试工具按该版本官方文档安装。流水线不自动接受额外软件许可或购买构建资源。
+- Windows：固定 Chromium 源码要求 Visual Studio 2026 C++、ATL/MFC；ARM64 还需 ARM64 工具与库。仅在临时托管 runner 上，从微软固定地址安装 SDK 10.0.28000.2270；执行前核对 SHA-256、Microsoft Authenticode 签名和固定上游的 SDK 要求。安装后检查头文件、三种架构库以及所需调试工具的版本和 PE 架构。ARM64 安装器缺少 x64 Debuggers 时，采用 runner-images 的方式，从同版 SDK 的 bin 目录补齐已有官方 DLL，不降低 Chromium 的 SDK 要求。本机和自托管环境不会自动安装，不购买构建资源。
 - Linux：Python 3、Git、可运行 `sudo -n build/install-build-deps.sh` 的专用 runner、Xvfb，以及可用的用户命名空间沙箱。不会通过 `--no-sandbox` 绕过沙箱。
 
 ## 验证范围与签名
@@ -135,3 +135,24 @@ Windows/Linux 的人工界面、VNC、锁屏和真实模型使用仍需对应平
 - 失败任务重跑时允许替换同名目标报告和产物，避免已存在的 artifact 名称阻断上传；成功目标不主动重跑。发布仍要求六目标同一源码、非 component 构建和原生冒烟全部通过。
 
 本地已通过项目检查与 actionlint；本轮未迁移仓库维护方式、增加收费资源或修改运行中的浏览器。新的完整编译、缓存命中、打包和冒烟结果以随后 Actions 报告为准。
+
+### 第二轮完整报告与工具链修正
+
+[运行 41188981769](https://github.com/CharlesXu/AgenticBrowser/actions/runs/41188981769)，源码 `9d87cf27617a5c142c75ecc516896e45605c834c`，六目标已全部结束，发布跳过；没有目标完成打包或原生冒烟。
+
+| 目标 | 最低剩余磁盘 GiB | 实际结果 |
+|---|---:|---|
+| Windows x64 | 119.7 | 补丁检查、依赖和定制补丁应用通过；GN 缺少 SDK 10.0.28000.0 的 include/um |
+| Windows arm64 | 97.1 | 同上 |
+| Linux arm64 | 83.5 | gperf 原生构建及 GN 通过；首批 C++ 编译退出 255/signal 127 |
+| Linux x64 | 66.7 | 285 分钟时间片；缓存命中 22,200/42,223（52.58%） |
+| macOS arm64 | 171.4 | 285 分钟时间片；缓存命中 20,906/27,967（74.75%） |
+| macOS x64 | 203.0 | 285 分钟时间片；缓存命中 16,766/22,113（75.82%） |
+
+三个时间片目标的缓存均成功保存，日志末构建步数分别为 52,532/60,910、34,710/72,593、27,932/74,866；不是耗时完成率。未观察到磁盘耗尽或新增编译诊断。
+
+- Windows 增加上述官方 SDK 安装与检查，不再仅凭 Visual Studio 已安装就认为 SDK 就绪。[微软下载页](https://learn.microsoft.com/en-us/windows/apps/windows-sdk/downloads)列出与固定 Chromium 文档一致的 10.0.28000.2270；下载后检查了安装器内的版本、组件清单及 SHA-256。实际 Windows 安装和完整编译仍待新一轮 CI。
+- Linux ARM64：固定 DEPS 对所有 Linux 主机选择 `Linux_x64` Clang。已下载固定官方归档并校验 SHA-256，`clang` 和 `llvm-ar` 的 ELF machine 均为 62（x64），与原 ARM64 runner 不匹配；原始编译器 stderr 未包含在报告中，不能把静态架构核验说成完整运行复现。改为上述 x64 交叉编译加独立 ARM64 原生冒烟，撤掉不再需要的 gperf 源码替换，不跳过依赖或冒烟。
+- GitHub 托管 job 硬上限为 6 小时，不能将 285 分钟直接扩大五倍。保持有效的时间片和缓存接续；需要代码修正时六目标从同一新提交重新构建，仅超时且缓存有效时可在同一运行重跑失败目标。
+
+本次本地检查：项目语法/i18n/清单、actionlint、PowerShell 语法解析通过；候选包校验接受匹配提交，拒绝旧提交、错误架构、component 构建、提前标记通过和损坏包，并拒绝在非 Linux ARM64 主机执行原生冒烟。这里只验证流水线边界，不代表 Windows SDK 已实际安装或六目标编译通过。

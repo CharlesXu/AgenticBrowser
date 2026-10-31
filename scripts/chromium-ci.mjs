@@ -9,6 +9,7 @@ const [mode,os,arch]=process.argv.slice(2);
 assert(['preflight','build'].includes(mode)&&['macos','windows','linux'].includes(os)&&['x64','arm64'].includes(arch),'Usage: chromium-ci.mjs preflight|build macos|windows|linux x64|arm64');
 const root=process.cwd(),source=resolve('.chromium/src'),depot=resolve('.tools/depot_tools');
 const target=`${os}-${arch}`,reportDir=resolve('.runtime/ci'),dist=resolve('.runtime/release',target);
+const crossLinuxArm64=os==='linux'&&arch==='arm64';
 const upstream=JSON.parse(await readFile('chromium/upstream.json','utf8'));
 const version=JSON.parse(await readFile('package.json','utf8')).version;
 const sha=execFileSync('git',['rev-parse','HEAD'],{encoding:'utf8'}).trim();
@@ -49,7 +50,7 @@ async function compile(args) {
 }
 const disk=await statfs(root),freeGiB=disk.bavail*disk.bsize/1024**3,ramGiB=totalmem()/1024**3;
 const errors=[];
-if(process.platform!=={macos:'darwin',windows:'win32',linux:'linux'}[os]||process.arch!==arch)errors.push('Runner OS/architecture must match the target natively.');
+if(process.platform!=={macos:'darwin',windows:'win32',linux:'linux'}[os]||process.arch!==(crossLinuxArm64?'x64':arch))errors.push('Build host must match the target, except Linux ARM64 uses the upstream x64 host toolchain.');
 if(os==='macos'&&process.platform==='darwin'&&process.env.GITHUB_ACTIONS==='true'&&process.env.RUNNER_ENVIRONMENT==='github-hosted') {
  const installed=(await readdir('/Applications')).filter(name=>/^Xcode_\d+\.\d+(\.\d+)?\.app$/.test(name));
  installed.sort((a,b)=>a.localeCompare(b,'en',{numeric:true}));
@@ -75,7 +76,7 @@ if(os==='windows') {
  probe('visualStudio',vswhere,['-latest','-products','*','-version','[18.0,19.0)','-requires','Microsoft.VisualStudio.Component.VC.Tools.x86.x64','-property','installationPath']);
  if(!probes.visualStudio)errors.push('Visual Studio 2026 C++ tools required; see pinned docs/windows_build_instructions.md.');
 }
-const preflight={target,sourceCommit:sha,upstream,freeGiB:Math.round(freeGiB*10)/10,ramGiB:Math.round(ramGiB*10)/10,cpus:availableParallelism(),probes,errors};
+const preflight={target,buildHost:{platform:process.platform,arch:process.arch},sourceCommit:sha,upstream,freeGiB:Math.round(freeGiB*10)/10,ramGiB:Math.round(ramGiB*10)/10,cpus:availableParallelism(),probes,errors};
 await writeFile(join(reportDir,`preflight-${target}.json`),JSON.stringify(preflight,null,2)+'\n');
 console.log(JSON.stringify(preflight,null,2));
 if(errors.length)throw Error('Runner preflight failed; no Chromium download or build started.');
@@ -125,22 +126,16 @@ const patch=resolve('chromium/upstream.patch');
 assert(!(await readFile(patch,'utf8')).includes('\r\n'),'Chromium patch must be checked out with LF line endings.');
 run('git',['apply','--check',patch],{cwd:source});
 const jobs=String(Math.max(1,Math.min(availableParallelism(),Math.floor(ramGiB/3))));
-const nativeGperf=os==='linux'&&arch==='arm64';
-// The pinned upstream gperf CIPD tag exists for x64, but not for Linux ARM64.
-// Replace only that host tool with the same GNU source version, built natively.
-if(nativeGperf) {
- const path=join(source,'DEPS'),deps=await readFile(path,'utf8');
- const entry=deps.match(/  'src\/third_party\/gperf\/cipd': \{[\s\S]*?\n  \},/u)?.[0];
- assert(entry?.includes("'version': 'version:3@3.2'")&&entry.includes("'condition': 'host_os == \"linux\" and non_git_source'"),'Review the native gperf fallback for this upstream DEPS.');
- // custom_deps=None does not disable CIPD packages in depot_tools.
- await writeFile(path,deps.replace(entry,entry.replace("'condition': 'host_os == \"linux\" and non_git_source'","'condition': 'False'")));
+if(os==='windows') {
+ await phase('windows-sdk');
+ run('pwsh',['-NoProfile','-File','scripts/setup-ci-windows-sdk.ps1','-TargetArch',arch]);
 }
-await writeFile('.chromium/.gclient',`solutions = [{"name":"src","url":${JSON.stringify(upstream.repository+'@'+upstream.revision)},"managed":False,"custom_deps":{},"custom_vars":{"checkout_configuration":"small"}}]\n`);
+// Keep both host and target sysroots; upstream DEPS supplies x64 host tools.
+await writeFile('.chromium/.gclient',`solutions = [{"name":"src","url":${JSON.stringify(upstream.repository+'@'+upstream.revision)},"managed":False,"custom_deps":{},"custom_vars":{"checkout_configuration":"small"}}]\n${crossLinuxArm64?'target_cpu = ["arm64"]\n':''}`);
 await phase('dependencies');
 run(tool('gclient'),['sync','--no-history','--shallow','--jobs=4'],{cwd:resolve('.chromium')});
 await phase('configure');
 if(os==='linux')run('sudo',['-n','bash','build/install-build-deps.sh','--no-prompt','--no-arm','--no-chromeos-fonts'],{cwd:source});
-if(nativeGperf)run(process.execPath,['scripts/setup-ci-gperf.mjs']);
 run(process.execPath,['scripts/apply-chromium-poc.mjs']);
 process.env.CCACHE_BASEDIR=source;
 run('ccache',['--zero-stats']);
@@ -174,10 +169,14 @@ if(os==='macos') {assert.equal(binary.readUInt32LE(0),0xfeedfacf);machine=binary
 else if(os==='linux'){assert.equal(binary.subarray(0,4).toString('hex'),'7f454c46');machine=binary.readUInt16LE(18);assert.equal(machine,arch==='arm64'?183:62);}
 else {const offset=binary.readUInt32LE(0x3c);assert.equal(binary.subarray(offset,offset+4).toString('hex'),'50450000');machine=binary.readUInt16LE(offset+4);assert.equal(machine,arch==='arm64'?0xaa64:0x8664);}
 const smokeArgs=['scripts/smoke-release.mjs',executable,join(reportDir,`smoke-${target}.json`)];
-await phase('smoke');
-if(os==='linux')run('xvfb-run',['-a',process.execPath,...smokeArgs]);
-else run(process.execPath,smokeArgs);
-// Staged runtime passed smoke; intermediate objects are no longer needed for packaging.
+if(!crossLinuxArm64) {
+ await phase('smoke');
+ if(os==='linux')run('xvfb-run',['-a',process.execPath,...smokeArgs]);
+ else run(process.execPath,smokeArgs);
+}
+// ARM64 is transferred as a candidate; only a native smoke job can approve it.
+const smoke=crossLinuxArm64?'pending':'passed';
+// Runtime is staged; intermediate objects are no longer needed for packaging.
 await rm(output,{recursive:true,force:true});
 await phase('package');
 await cp(join(source,'LICENSE'),join(stage,'LICENSE'));
@@ -193,8 +192,8 @@ if(os==='macos') {
 else {asset=join(dist,basename+'.tar.xz');run('tar',['-cJf',asset,'-C',dirname(stage),'Agentic Browser']);}
 const contents=await readFile(asset),sha256=createHash('sha256').update(contents).digest('hex');
 assert(contents.length>10_000_000,'Unexpectedly small browser package');
-await writeFile(join(dist,'manifest.json'),JSON.stringify({target,version,sourceCommit:sha,upstream,asset:asset.split(/[\\/]/).at(-1),bytes:contents.length,sha256,binaryArchitecture:arch,componentBuild:false,smoke:'passed',signed:false},null,2)+'\n');
+await writeFile(join(dist,'manifest.json'),JSON.stringify({target,version,sourceCommit:sha,upstream,asset:asset.split(/[\\/]/).at(-1),bytes:contents.length,sha256,binaryArchitecture:arch,componentBuild:false,smoke,signed:false},null,2)+'\n');
 await writeFile(asset+'.sha256',sha256+'  '+asset.split(/[\\/]/).at(-1)+'\n');
-await cp(join(reportDir,`smoke-${target}.json`),join(dist,'smoke.json'));
+if(!crossLinuxArm64)await cp(join(reportDir,`smoke-${target}.json`),join(dist,'smoke.json'));
 await phase('complete');
-console.log(JSON.stringify({target,asset,sha256,smoke:'passed'}));
+console.log(JSON.stringify({target,asset,sha256,smoke}));
