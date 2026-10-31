@@ -103,6 +103,7 @@ jobs:
           name: reports-${{ matrix.os }}-${{ matrix.arch }}
           path: .runtime/ci/*.json
           if-no-files-found: error
+          overwrite: true
           retention-days: 7
       - name: Upload verified browser package
         if: success() && inputs.mode != 'preflight'
@@ -111,6 +112,7 @@ jobs:
           name: browser-${{ matrix.os }}-${{ matrix.arch }}
           path: .runtime/release/${{ matrix.os }}-${{ matrix.arch }}/
           if-no-files-found: error
+          overwrite: true
           compression-level: 0
           retention-days: 7
   publish:

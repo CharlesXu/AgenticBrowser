@@ -118,13 +118,29 @@ const tool=name=>join(depot,name+(os==='windows'?'.bat':''));
 // Disabling self-update also skips the first-run Python bootstrap in gclient.
 run(os==='windows'?join(depot,'bootstrap/win_tools.bat'):join(depot,'ensure_bootstrap'));
 run(tool('python-bin/python3'),['--version']);
-run('git',['clone','--depth','1','--single-branch','--branch',upstream.version,upstream.repository,source]);
+run('git',['clone','--config','core.autocrlf=false','--depth','1','--single-branch','--branch',upstream.version,upstream.repository,source]);
 assert.equal(capture('git',['rev-parse','HEAD'],source),upstream.revision,'Official tag/SHA mismatch');
+await phase('patch-check');
+const patch=resolve('chromium/upstream.patch');
+assert(!(await readFile(patch,'utf8')).includes('\r\n'),'Chromium patch must be checked out with LF line endings.');
+run('git',['apply','--check',patch],{cwd:source});
 const jobs=String(Math.max(1,Math.min(availableParallelism(),Math.floor(ramGiB/3))));
+const nativeGperf=os==='linux'&&arch==='arm64';
+// The pinned upstream gperf CIPD tag exists for x64, but not for Linux ARM64.
+// Replace only that host tool with the same GNU source version, built natively.
+if(nativeGperf) {
+ const path=join(source,'DEPS'),deps=await readFile(path,'utf8');
+ const entry=deps.match(/  'src\/third_party\/gperf\/cipd': \{[\s\S]*?\n  \},/u)?.[0];
+ assert(entry?.includes("'version': 'version:3@3.2'")&&entry.includes("'condition': 'host_os == \"linux\" and non_git_source'"),'Review the native gperf fallback for this upstream DEPS.');
+ // custom_deps=None does not disable CIPD packages in depot_tools.
+ await writeFile(path,deps.replace(entry,entry.replace("'condition': 'host_os == \"linux\" and non_git_source'","'condition': 'False'")));
+}
 await writeFile('.chromium/.gclient',`solutions = [{"name":"src","url":${JSON.stringify(upstream.repository+'@'+upstream.revision)},"managed":False,"custom_deps":{},"custom_vars":{"checkout_configuration":"small"}}]\n`);
+await phase('dependencies');
 run(tool('gclient'),['sync','--no-history','--shallow','--jobs=4'],{cwd:resolve('.chromium')});
 await phase('configure');
 if(os==='linux')run('sudo',['-n','bash','build/install-build-deps.sh','--no-prompt','--no-arm','--no-chromeos-fonts'],{cwd:source});
+if(nativeGperf)run(process.execPath,['scripts/setup-ci-gperf.mjs']);
 run(process.execPath,['scripts/apply-chromium-poc.mjs']);
 process.env.CCACHE_BASEDIR=source;
 run('ccache',['--zero-stats']);
