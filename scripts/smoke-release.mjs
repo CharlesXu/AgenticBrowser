@@ -8,7 +8,8 @@ import {randomUUID} from 'node:crypto';
 
 const [executable,report]=process.argv.slice(2);assert(executable&&report);
 const profile=await mkdtemp(join(tmpdir(),'agentic-release-'));
-const reports=new Map(),session=randomUUID();let browser,stopped=false,loggedOut=false;
+const reports=new Map(),session=randomUUID();let browser,stopped=false,closed=false,loggedOut=false,stderr='',phase='prepare',discovery;
+const processResult={exitCode:null,signal:null,spawnError:null};
 const server=createServer((req,res)=>{
  const url=new URL(req.url,'http://127.0.0.1');res.setHeader('Cache-Control','no-store');
  if(url.pathname==='/login'){res.setHeader('Set-Cookie',`smoke=${session}; Path=/; HttpOnly; SameSite=Strict`);res.end('ok');}
@@ -25,20 +26,25 @@ const server=createServer((req,res)=>{
  }
 });
 await new Promise(done=>server.listen(0,'127.0.0.1',done));const base='http://127.0.0.1:'+server.address().port;
-async function until(fn,description){const deadline=Date.now()+45000;while(!await fn()){assert(!stopped,'Browser exited');assert(Date.now()<deadline,'Timeout: '+description);await new Promise(r=>setTimeout(r,150));}}
+async function until(fn,description){phase=description;const deadline=Date.now()+45000;while(!await fn()){assert(!stopped,'Browser exited');assert(Date.now()<deadline,'Timeout: '+description);await new Promise(r=>setTimeout(r,150));}}
 const checks={};
 try {
  await mkdir(join(profile,'Default'));
  await writeFile(join(profile,'Default/Preferences'),JSON.stringify({session:{restore_on_startup:4,startup_urls:[base+'/?space=main']}}));
  const args=[`--user-data-dir=${profile}`,'--no-first-run','--no-default-browser-check','--mute-audio','--agentic-poc','--password-store=basic','--use-mock-keychain','--disable-features=DialMediaRouteProvider','--enable-features=TabGroupsFocusing:TabGroupsFocusFreezing/false',`--agentic-poc-task-a-url=${base}/?space=task-a`,`--agentic-poc-task-b-url=${base}/?space=task-b`,base+'/?space=main'];
- browser=spawn(executable,args,{stdio:['ignore','ignore','pipe']});let stderr='';browser.stderr.on('data',x=>{stderr=(stderr+x).slice(-12000);});browser.on('exit',()=>{stopped=true;});browser.on('error',()=>{stopped=true;});
+ phase='launch';
+ browser=spawn(executable,args,{stdio:['ignore','ignore','pipe']});browser.stderr.on('data',x=>{stderr=(stderr+x).slice(-12000);});
+ browser.on('exit',(exitCode,signal)=>{stopped=true;Object.assign(processResult,{exitCode,signal});});
+ browser.on('error',error=>{stopped=true;processResult.spawnError={code:error.code,message:error.message};});
+ browser.on('close',()=>{closed=true;});
  await until(()=>['main','task-a','task-b'].every(id=>reports.get(id)?.loggedIn&&reports.get(id)?.shared===session&&reports.get(id)?.session===id),'three spaces and shared login');checks.threeSpaces=true;checks.sharedLogin=true;
- const discovery=JSON.parse(await readFile(join(profile,'agentic-poc.json'),'utf8'));assert.deepEqual(Object.keys(discovery.tasks).sort(),['task-a','task-b']);
+ phase='discovery';discovery=JSON.parse(await readFile(join(profile,'agentic-poc.json'),'utf8'));assert.deepEqual(Object.keys(discovery.tasks).sort(),['task-a','task-b']);
  const call=async(space,action,fields={},token=discovery.tasks[space],expected=200)=>{
   const res=await fetch(`http://127.0.0.1:${discovery.port}/space`,{method:'POST',headers:{Authorization:'Bearer '+token},body:JSON.stringify({...fields,space,action}),signal:AbortSignal.timeout(5000)});
   assert.equal(res.status,expected,`${space}/${action}`);return res.json();
  };
- await call('main','claim',{},discovery.tasks['task-a'],403);checks.mainProtected=true;
+ phase='main protection';await call('main','claim',{},discovery.tasks['task-a'],403);checks.mainProtected=true;
+ phase='scoped input';
  const lease=await call('task-a','claim');const seen=await call('task-a','observe',lease);
  const snapshot=await call('task-a','snapshot',{...lease,tab:seen.tab});const field=snapshot.nodes.find(n=>n.role==='textbox');assert(field?.ref);
  await call('task-a','fillRef',{...lease,tab:seen.tab,ref:field.ref,text:'Agentic smoke'});
@@ -47,6 +53,19 @@ try {
  loggedOut=true;await until(()=>['main','task-a','task-b'].every(id=>reports.get(id)?.loggedIn===false),'shared logout');checks.sharedLogout=true;
  await mkdir(dirname(report),{recursive:true});await writeFile(report,JSON.stringify({status:'passed',platform:process.platform,arch:process.arch,checks,notVerified:['manual UI','installer execution','signing/notarization','VNC','locked screen','models']},null,2)+'\n');
  console.log(JSON.stringify(checks));
+} catch(error) {
+ // Capture startup failures before cleanup sends its own termination signal.
+ if(stopped&&!closed)await Promise.race([new Promise(done=>browser.once('close',done)),new Promise(done=>setTimeout(done,1000))]);
+ if(!discovery)try{discovery=JSON.parse(await readFile(join(profile,'agentic-poc.json'),'utf8'));}catch{}
+ const redact=value=>{
+  let text=String(value);
+  for(const secret of [profile,session,base,...Object.values(discovery?.tasks||{})])if(typeof secret==='string'&&secret)text=text.replaceAll(secret,'[redacted]');
+  return text.replace(/Bearer\s+[^\s"']+/gi,'Bearer [redacted]');
+ };
+ const failure=JSON.parse(JSON.stringify({status:'failed',platform:process.platform,arch:process.arch,phase,checks,error:error.message,process:processResult,stderr},(_key,value)=>typeof value==='string'?redact(value):value));
+ await mkdir(dirname(report),{recursive:true});await writeFile(report,JSON.stringify(failure,null,2)+'\n');
+ console.error('Browser smoke failed:',JSON.stringify(failure));
+ throw error;
 } finally {
  if(browser?.pid&&!stopped){if(process.platform==='win32')execFileSync('taskkill',['/pid',String(browser.pid),'/t','/f'],{stdio:'ignore'});else browser.kill('SIGTERM');await Promise.race([new Promise(done=>browser.once('exit',done)),new Promise(done=>setTimeout(done,5000))]);}
  server.closeAllConnections();server.close();

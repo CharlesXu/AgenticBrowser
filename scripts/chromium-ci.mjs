@@ -6,6 +6,7 @@ import {resolve,relative,dirname,join,isAbsolute} from 'node:path';
 import {createHash} from 'node:crypto';
 
 const [mode,os,arch]=process.argv.slice(2);
+const buildStarted=Date.now();
 assert(['preflight','build'].includes(mode)&&['macos','windows','linux'].includes(os)&&['x64','arm64'].includes(arch),'Usage: chromium-ci.mjs preflight|build macos|windows|linux x64|arm64');
 const root=process.cwd(),source=resolve('.chromium/src'),depot=resolve('.tools/depot_tools');
 const target=`${os}-${arch}`,reportDir=resolve('.runtime/ci'),dist=resolve('.runtime/release',target);
@@ -25,6 +26,11 @@ const capture=(cmd,args=[],cwd=root)=>run(cmd,args,{cwd,stdio:['ignore','pipe','
 async function compile(args) {
  // Stop gracefully before the hosted job limit so the completed object cache can be saved.
  const cmd=tool('autoninja'),windows=process.platform==='win32';
+ // Preparation counts toward the step's 330-minute limit, too. Reserve ten
+ // minutes for stopping the process and saving diagnostics/cache statistics.
+ const compileBudgetMs=Math.min(285*60000,320*60000-(Date.now()-buildStarted));
+ assert(compileBudgetMs>0,'Preparation exhausted the build step budget.');
+ console.log('Compile budget minutes:',Math.floor(compileBudgetMs/60000));
  const child=spawn(windows?`"${cmd}"`:cmd,windows?args.map(arg=>`"${arg}"`):args,
   {cwd:source,stdio:'inherit',detached:!windows,shell:windows});
  let timedOut=false,force;
@@ -36,7 +42,7 @@ async function compile(args) {
    try{process.kill(-child.pid,'SIGINT');}catch{}
    force=setTimeout(()=>{try{process.kill(-child.pid,'SIGKILL');}catch{}},60000);
   }
- },285*60000);
+ },compileBudgetMs);
  try {
   const code=await new Promise((resolve,reject)=>{child.once('error',reject);child.once('close',resolve);});
   assert(!timedOut,'Compilation paused at the time limit; rerun this target to reuse the saved ccache.');
@@ -45,7 +51,7 @@ async function compile(args) {
   clearTimeout(timer);clearTimeout(force);
   const stats=capture('ccache',['--show-stats','--verbose']);
   console.log(stats);
-  await writeFile(join(reportDir,`cache-${target}.json`),JSON.stringify({target,sourceCommit:sha,timedOut,stats},null,2)+'\n');
+  await writeFile(join(reportDir,`cache-${target}.json`),JSON.stringify({target,sourceCommit:sha,timedOut,compileBudgetMs,stats},null,2)+'\n');
  }
 }
 const disk=await statfs(root),freeGiB=disk.bavail*disk.bsize/1024**3,ramGiB=totalmem()/1024**3;
@@ -138,10 +144,16 @@ await phase('configure');
 if(os==='linux')run('sudo',['-n','bash','build/install-build-deps.sh','--no-prompt','--no-arm','--no-chromeos-fonts'],{cwd:source});
 run(process.execPath,['scripts/apply-chromium-poc.mjs']);
 process.env.CCACHE_BASEDIR=source;
-run('ccache',['--zero-stats']);
 const output=resolve(source,`out/AgenticRelease-${arch}`),outRelative=relative(source,output).replaceAll('\\','/');
 await mkdir(output,{recursive:true});
-await writeFile(join(output,'args.gn'),`target_os = "${{macos:'mac',windows:'win',linux:'linux'}[os]}"\ntarget_cpu = "${arch}"\nis_debug = false\nis_component_build = false\nis_official_build = false\nsymbol_level = 0\nblink_symbol_level = 0\nv8_symbol_level = 0\nchrome_pgo_phase = 0\nuse_thin_lto = false\nuse_remoteexec = false\ncc_wrapper = "ccache"\n${os==='macos'?'use_system_xcode = true\n':''}`);
+let ccWrapper='ccache';
+if(os==='windows') {
+ const python=capture(tool('python-bin/python3'),['-c','import sys; print(sys.executable)']);
+ ccWrapper=`"${python.replaceAll('\\','/')}" "${relative(output,resolve('scripts/ccache-cl.py')).replaceAll('\\','/')}"`;
+ run(python,['scripts/verify-ccache-cl.py',join(source,'third_party/llvm-build/Release+Asserts/bin/clang-cl.exe'),arch,join(reportDir,`cache-probe-${target}.json`)]);
+}
+run('ccache',['--zero-stats']);
+await writeFile(join(output,'args.gn'),`target_os = "${{macos:'mac',windows:'win',linux:'linux'}[os]}"\ntarget_cpu = "${arch}"\nis_debug = false\nis_component_build = false\nis_official_build = false\nsymbol_level = 0\nblink_symbol_level = 0\nv8_symbol_level = 0\nchrome_pgo_phase = 0\nuse_thin_lto = false\nuse_remoteexec = false\ncc_wrapper = ${JSON.stringify(ccWrapper)}\n${os==='macos'?'use_system_xcode = true\n':''}`);
 run(tool('gn'),['gen',outRelative],{cwd:source});
 const targets=os==='linux'?['chrome','chrome_sandbox']:['chrome'];
 await phase('compile');
