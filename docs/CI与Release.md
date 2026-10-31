@@ -30,7 +30,7 @@
 
 ## 构建机器
 
-目前使用已有 GitHub 托管 runner，不新增机器。已取消原先未经完整编译实测的 100 GiB 磁盘拦截；磁盘预检只报告可用量。仍检查目标架构、基础工具链和 8 GiB 级内存（允许系统预留后可用内存降至 7.5 GiB）。GitHub 托管 job 限时 360 分钟，预检通过不等于编译一定能完成。
+目前使用已有 GitHub 托管 runner，不新增机器。已取消原先未经完整编译实测的 100 GiB 磁盘拦截；磁盘预检只报告可用量。仍检查目标架构、基础工具链和 7 GiB 级内存（允许系统预留后可用内存降至 6.5 GiB）。GitHub 托管 job 限时 360 分钟，预检通过不等于编译一定能完成。
 
 构建期间每 5 秒记录工作目录所在文件系统的剩余磁盘，报告 `disk-<target>.json` 保留最低剩余、相对构建开始的峰值增长、文件系统使用峰值及阶段采样。数字包含系统后台活动，短于采样间隔的尖峰可能遗漏；失败也保留报告。
 
@@ -110,3 +110,7 @@ Windows/Linux 的人工界面、VNC、锁屏和真实模型使用仍需对应平
 - 下一次采用编译缓存跨轮复用。隔离的小型 Clang 模块验证确认同内容文件可命中、头文件变化会重编；使用现有 Chromium `base/logging.cc` 的真实命令，仅将输出改到独立临时目录，首次 0.92 秒、第二次缓存命中 0.01 秒。这只证明本机缓存路径可用，完整 CI 命中率和完成时间仍待验证，没有更改运行中的浏览器文件。
 
 官方依据：[GitHub runner 规格](https://docs.github.com/en/actions/reference/runners/github-hosted-runners)、[Actions 缓存](https://docs.github.com/en/actions/reference/workflows-and-actions/dependency-caching)、[ccache 手册](https://ccache.dev/manual/latest.html)、[Chromium Windows 构建](https://chromium.googlesource.com/chromium/src/+/156.0.8078.48/docs/windows_build_instructions.md)、[Linux 构建](https://chromium.googlesource.com/chromium/src/+/156.0.8078.48/docs/linux/build_instructions.md)、[macOS 构建](https://chromium.googlesource.com/chromium/src/+/156.0.8078.48/docs/mac_build_instructions.md)。
+
+### 公开仓库后的六目标启动
+
+2026-10-31：仓库已改为 Public，匿名访问确认成功。首轮 [41167162521](https://github.com/CharlesXu/AgenticBrowser/actions/runs/41167162521) 的校验通过，六目标均启动，未再受到此前计费限制拦截。macOS arm64 实测为 7 GiB / 3 核，被旧 7.5 GiB 内存阈值拦截；Xcode 26.3、SDK 26.2 和 Metal 检查均通过。停止该轮后，最低内存改为覆盖官方 7 GiB 标准 runner，并按每个编译任务约 3 GiB 限制并发（该 runner 为 2 个任务）。此修正只解除预检误拦截，不表示完整编译的内存和耗时已通过验证。

@@ -56,8 +56,8 @@ if(os==='macos'&&process.platform==='darwin'&&process.env.GITHUB_ACTIONS==='true
  assert(installed.length,'No installed Xcode found');
  process.env.DEVELOPER_DIR=join('/Applications',installed.at(-1),'Contents/Developer');
 }
-// An 8 GiB VM exposes slightly less usable RAM after system reservations.
-if(ramGiB<7.5)errors.push('An 8 GiB-class runner is required (32 GiB recommended).');
+// Standard macOS ARM64 runners have 7 GiB; allow system reservations.
+if(ramGiB<6.5)errors.push('A 7 GiB-class runner is required (32 GiB recommended).');
 const probes={};
 function probe(name,cmd,args){try{probes[name]=capture(cmd,args).slice(0,1600);}catch{errors.push(`${name} unavailable; install the pinned Chromium toolchain on this runner.`);}}
 probe('git','git',['--version']);
@@ -120,7 +120,7 @@ run(os==='windows'?join(depot,'bootstrap/win_tools.bat'):join(depot,'ensure_boot
 run(tool('python-bin/python3'),['--version']);
 run('git',['clone','--depth','1','--single-branch','--branch',upstream.version,upstream.repository,source]);
 assert.equal(capture('git',['rev-parse','HEAD'],source),upstream.revision,'Official tag/SHA mismatch');
-const jobs=String(Math.max(1,Math.min(availableParallelism(),Math.floor(ramGiB/2))));
+const jobs=String(Math.max(1,Math.min(availableParallelism(),Math.floor(ramGiB/3))));
 await writeFile('.chromium/.gclient',`solutions = [{"name":"src","url":${JSON.stringify(upstream.repository+'@'+upstream.revision)},"managed":False,"custom_deps":{},"custom_vars":{"checkout_configuration":"small"}}]\n`);
 run(tool('gclient'),['sync','--no-history','--shallow','--jobs=4'],{cwd:resolve('.chromium')});
 await phase('configure');
