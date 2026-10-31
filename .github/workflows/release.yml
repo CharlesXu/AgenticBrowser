@@ -3,7 +3,7 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: Resource preflight, or build all six targets and publish a private PoC release
+        description: Resource preflight, or build all six targets and publish a public PoC release
         type: choice
         options: [preflight, build-one, build-release]
         default: preflight
@@ -32,12 +32,12 @@ jobs:
       - run: npm ci --ignore-scripts
       - run: npm run check
       - run: node scripts/verify-model-settings.mjs
-      - name: Verify private repository and source version
+      - name: Verify public repository and source version
         id: version
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          test "$(gh api repos/CharlesXu/AgenticBrowser --jq .private)" = true
+          test "$(gh api repos/CharlesXu/AgenticBrowser --jq .private)" = false
           node -e "const fs=require('fs');const v=require('./package.json').version;if(!/^\d+\.\d+\.\d+$/.test(v))throw Error('Invalid version');fs.appendFileSync(process.env.GITHUB_OUTPUT,'version='+v+'\n')"
       - name: Select build targets
         id: matrix
@@ -130,7 +130,7 @@ jobs:
           path: .runtime/release-artifacts
       - run: npm ci --ignore-scripts
       - run: npm run integration:pack
-      - name: Verify all six packages and publish private pre-release
+      - name: Verify all six packages and publish public pre-release
         env:
           GH_TOKEN: ${{ github.token }}
         run: node scripts/publish-release.mjs

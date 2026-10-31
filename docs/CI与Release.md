@@ -2,6 +2,8 @@
 
 2026-10-23：按用户新要求，增加 Windows、macOS、Linux × x64、arm64 的构建与私有 Release。当前浏览器仍为 PoC；构建成功、运行冒烟和完整平台功能验收分别记录。
 
+2026-10-31：用户授权公开仓库，并直接运行六目标 `build-release`。保留标准托管 runner、编译缓存、磁盘记录以及六目标全部通过后的发布条件；既有历史结果不代表本轮已通过。
+
 ## 工作流
 
 [Browser Release](https://github.com/CharlesXu/AgenticBrowser/actions/workflows/release.yml) 仅手动触发，支持：
@@ -12,7 +14,7 @@
 
 每个任务使用独立 checkout 和 `out/AgenticRelease-<arch>`，`is_component_build=false`、`is_debug=false`，不使用本机运行中的 component build 或 Profile。不同 runner 可以并行；同一发布工作流不重叠，不缓存整个 Chromium 源码树。
 
-六个目标全部成功后才进入发布任务。发布任务再次核对源码 SHA、上游版本、架构、冒烟结果、包大小和 SHA-256。先创建私有草稿并上传所有资产，回读完整后才发布为 **Pre-release**；任一目标失败不会创建可下载的完整 Release，不覆盖已有同名版本。
+六个目标全部成功后才进入发布任务。发布任务再次核对源码 SHA、上游版本、架构、冒烟结果、包大小和 SHA-256。先创建草稿并上传所有资产，回读完整后才发布为 **Pre-release**；任一目标失败不会创建可下载的完整 Release，不覆盖已有同名版本。
 
 版本标签为 `v<产品版本>-poc.<Git SHA 前 16 位>`。文件名为：
 
@@ -24,7 +26,7 @@
 
 三个平台的默认用户数据目录独立于 Chromium；不迁移或覆盖已有 Profile，显式 `--user-data-dir` 仍优先。
 
-同时附带 Skill/Plugin/MCP 接入套件、SHA256SUMS、构建清单、Chromium LICENSE 与 NOTICE。源码库和 Release 保持 Private；这不会自动让公开网站出现可匿名下载的链接。
+同时附带 Skill/Plugin/MCP 接入套件、SHA256SUMS、构建清单、Chromium LICENSE 与 NOTICE。按 2026-10-31 用户授权，源码库改为 Public；发布后的 Release 资产可匿名下载。
 
 ## 构建机器
 
@@ -38,7 +40,7 @@ macOS 托管 runner 先通过进程级 `DEVELOPER_DIR` 选择已预装的最高�
 
 单次编译最多 285 分钟，整个下载／构建／打包步骤最多 330 分钟，为总计 360 分钟的 job 留出缓存与报告上传时间。使用独立 ccache 4.14.2，校验官方资产 SHA-256，缓存上限 8 GiB；只缓存编译结果，不缓存 Profile、凭据或整个源码树。Clang 模块使用 depend 模式与官方文档要求的 `modules,time_macros` 设置，编译器按内容校验。缓存按平台、架构及上游配置隔离；每次使用新 key，失败也保存，以便下次重跑同一目标复用。达到时间片仍记为未完成，不跳过最终链接、原生冒烟或发布门槛。Actions 缓存可能被配额淘汰，实际命中和用量记录在 `cache-<target>.json`；没有增购缓存容量或机器。
 
-默认 runner 为 `macos-15-intel`、`macos-15`、`windows-2025`、`windows-11-arm`、`ubuntu-24.04`、`ubuntu-24.04-arm`。可在仓库 Actions Variables 中为以下变量设置 JSON 标签数组，指向已配置、专用于此私有仓库的 runner：
+默认 runner 为 `macos-15-intel`、`macos-15`、`windows-2025`、`windows-11-arm`、`ubuntu-24.04`、`ubuntu-24.04-arm`。可在仓库 Actions Variables 中为以下变量设置 JSON 标签数组，指向已配置、专用于此仓库的 runner：
 
 | 变量 | 本机目标 |
 |---|---|

@@ -158,8 +158,8 @@ npm run mcp:verify -- "/测试Profile路径/task-a.json" "/测试Profile路径/t
 
 MCP 的 `space_handoff` 主动将当前空间交给人；原 Agent 保留旧 lease 作为身份证明，在人交还后 `space_resume` 并重新观察。`agentic-browser://guide` 返回与适配器一起发布的当前 Skill。参考 Ego 的任务连续性和交接方式，没有引入其完整 SDK 或扩大 PoC 权限。
 
-私有源码仓库：[CharlesXu/AgenticBrowser](https://github.com/CharlesXu/AgenticBrowser)。Chromium 定制代码、上游补丁、版本 SHA 均随 commit 管理。历史验收 `evidence/` 和运行数据仅保存在本地，详见 [上游维护](上游维护.md)。本节功能验证结果见实施记录，不由“已写入源码”推导为“已验证”。
+公开源码仓库：[CharlesXu/AgenticBrowser](https://github.com/CharlesXu/AgenticBrowser)。Chromium 定制代码、上游补丁、版本 SHA 均随 commit 管理。历史验收 `evidence/` 和运行数据仅保存在本地，详见 [上游维护](上游维护.md)。本节功能验证结果见实施记录，不由“已写入源码”推导为“已验证”。
 
 ## 六目标 CI 与 Release
 
-已增加 Windows/macOS/Linux × x64/arm64 的手动构建、冒烟、打包及私有预发布流程。先检查 runner 资源，六个目标全部成功后才发布；当前不提供开发者证书签名或公证。配置、执行方式与实际状态见 [CI 与 Release](docs/CI与Release.md)。
+已增加 Windows/macOS/Linux × x64/arm64 的手动构建、冒烟、打包及公开预发布流程。先检查 runner 资源，六个目标全部成功后才发布；当前不提供开发者证书签名或公证。配置、执行方式与实际状态见 [CI 与 Release](docs/CI与Release.md)。
