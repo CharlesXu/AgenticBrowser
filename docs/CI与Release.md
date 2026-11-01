@@ -218,3 +218,28 @@ macOS ARM64 下载后的 DMG 已独立核对大小、源码清单和 SHA-256：`
 - Windows 缓存：两个 Windows job 的真实模块生成命令都明确拒绝 `/clang:-fno-implicit-module-maps`。只新增这一个无文件路径的布尔选项到精确允许列表；显式模块映射及 PCM 参数仍交给 ccache 解析，保留原参数顺序和缓存哈希。这个样本不能证明全部拒绝均同一原因。[Clang 模块缓存条件](https://ccache.dev/manual/4.14.2.html#_c_modules)继续使用既有 depend 模式及配置，不忽略模块依赖。
 
 本地验证：固定 Clang/ccache 生成 Windows x64、ARM64 的小型 PCM/COFF，模块生成和消费均命中缓存，模块文件单独变化、头文件、模块映射、参数变化均失效；缓存与直接编译字节一致。探针使用 Chromium 相同的 `/Brepro` 和 `-fcolor-diagnostics`，避免时间戳和诊断配置使比较失真。每台 Windows runner 在大编译前运行这些检查。冒烟协议 fixture 验证延迟关闭、关闭超时、清理失败及最终报告顺序，不启动用户浏览器，也不代表真实浏览器原生冒烟通过。完整 Windows 构建及 Linux 清理修正仍待新一轮六目标验证；所有目标从同一新提交构建，旧 macOS 包仅保留作证据，不混入新源码发布。
+
+### 第六轮两次尝试与签名顺序修正
+
+[运行 41289822234](https://github.com/CharlesXu/AgenticBrowser/actions/runs/41289822234)，源码 `67dc030ecf28ee6bc025483cfe967444b94374ef`，两次尝试均已结束。首次尝试 Linux x64、macOS ARM64 的非 component 构建、架构断言、五项原生冒烟和打包通过，其余四目标达到编译时间预算。四份缓存经上传日志及缓存 API 确认可用后，只重跑失败任务，保留两个成功包。第二次尝试没有新增成功包，Linux ARM64 原生冒烟及发布跳过。
+
+| 目标 | 第二次尝试结果 | 缓存命中／未命中 | 最低空闲磁盘 GiB |
+|---|---|---|---:|
+| Linux x64 | 保留首次成功，未重新编译 | 首次命中 46,648/46,652 | 64.4 |
+| macOS arm64 | 保留首次成功，未重新编译 | 首次命中 46,877/46,882 | 167.2 |
+| macOS x64 | 3h5m12.86s 编译成功，随后 ad-hoc 签名失败 | 43,490/46,337（93.86%），未命中 2,847 | 198.2 |
+| Linux arm64 | 285 分钟编译时间片结束 | 67,507/78,337（86.18%），未命中 10,830 | 58.6 |
+| Windows x64 | 285 分钟编译时间片结束 | 22,740/30,614（74.28%），未命中 7,874 | 184.2 |
+| Windows arm64 | 扣除准备耗时后约 277.16 分钟时间片结束 | 23,115/31,781（72.73%），未命中 8,666 | 86.5 |
+
+第二次尝试四个目标的日志均确认实际恢复首次缓存，并保存到新的 attempt 2 缓存键；大小分别约 2.0、3.3、1.5、1.1 GiB。两个 Windows 的固定 SDK、基础和模块原生缓存探针均通过，真实模块样本均为 `direct_cache_hit`。可缓存比例分别为 99.77%、99.40%；剩余 `-pedantic` 拒绝样本直接编译退出 0，不据此扩大跳过列表。Windows x64 的 1 次 `Compilation failed` 计数尚未定位到具体调用，不能断言由终止引起；停止时有 5 条 taskkill 子进程提示，ARM64 有 1 条。未观察到先行源码编译诊断或磁盘耗尽。构建步数不是剩余耗时比例。
+
+Linux x64 下载包的 SHA-256 为 `c6a35bb16598669984a4268f551557c5853b5e227418986d706f742a6ef14e4d`，macOS ARM64 为 `2d96f0392cf97c283364c0f11d583e2ee34906d4425720bfadbe8ac23a6741aa`；独立大小、清单和散列核验通过，DMG 本机 `hdiutil verify` 通过。Linux 清理问题本轮未复现，不能将一次通过视为永久无竞争保证。API 部分时间戳与完整日志矛盾，时长和完成状态须交叉核对。
+
+macOS x64 的签名错误为 `code object is not signed at all`，子项指向嵌套 framework。旧脚本先签全部 Mach-O，再签 bundle；但对 bundle 主程序路径执行 `codesign` 也会封装其所属 bundle，可能先于未签名的 framework。隔离的未签名 x64 小应用已复现相同诊断。修正通过 `CFBundleExecutable` 识别主程序，把它留给所属 bundle 的签名操作，其余独立 Mach-O 和 bundle 一起按目录深度从内向外签名。保留 entitlements/flags 和最终 `--verify --deep --strict`；签名时不使用 `--deep`。顺序依据 [Apple TN2206](https://developer.apple.com/library/archive/technotes/tn2206/_index.html)。
+
+`python3 scripts/verify-sign-ci-macos.py` 用真实 codesign 验证 x64、ARM64 的未签名嵌套 framework、helper app、XPC 和独立 dylib；两架构修正后严格验签通过，原有主程序及 helper 的 entitlements/flags 保留，内层资源改动被拒绝。已下载的真实 macOS ARM64 包在独立副本上也完成 16 个 Mach-O、10 个 bundle 的重新签名和严格校验，原 DMG 散列不变，未启动浏览器。上述验证不代替新提交的 macOS x64 原生浏览器冒烟，也不构成 Developer ID 签名或公证。
+
+为判断后续编译耗时，既有五秒磁盘采样增加 [Node OS 计数器](https://nodejs.org/api/os.html#oscpus) 的整机及逐逻辑 CPU 忙碌比例、空闲内存和编译阶段加权 CPU 均值。阶段交界的 CPU 区间不计入编译均值。数据包含系统及其他进程；`os.freemem()` 不是可回收内存、编译进程 RSS、换页或 I/O 压力，短峰值可能遗漏，仍未保留 Siso trace/metrics。隔离负载采样和失败退出码保留检查通过；托管 runner 实测留待新一轮，不据本机数据调整并发。保持原并发数、时间预算和免费 runner，不修改上游版本、缓存允许列表或沙箱要求。
+
+整轮结束并保存完整证据后才实施上述修正。由于源码改变，下一轮六目标必须从同一新提交重建，不能将此前两个成功包混入发布。
