@@ -198,3 +198,23 @@ Linux x64 缓存命中 42,223/46,652（90.51%）。四个 Unix 目标的缓存�
 - Windows：保留七个已验证参数的精确处理范围。完整构建的实际拒绝参数尚无证据，不盲目添加跳过项；每个 job 最多采集四类真实编译命令和对应 [ccache 日志](https://ccache.dev/manual/4.14.2.html#config_log_file)，与资源报告一同上传，供下一轮精确修正。既有缓存继续保存。
 
 本地检查：小型嵌套 macOS 应用签名后严格验签及启动成功，修改内层资源后校验拒绝；固定 Clang/ccache 的两种 Windows COFF 探针及有限诊断采样通过。Linux helper 的平台保护检查、项目检查、Python 语法和 actionlint 通过。完整 macOS 浏览器及 Linux 原生沙箱启动仍待新一轮验证，Windows 完整缓存兼容仍未解决。
+
+### 第五轮结果与清理、模块缓存修正
+
+[运行 41267031843](https://github.com/CharlesXu/AgenticBrowser/actions/runs/41267031843)，源码 `8621b81d706165476c23fc2823a877ba7f7dd722`，全部任务已结束。macOS ARM64 成功，其余五目标失败，Linux ARM64 原生冒烟和发布跳过。全部日志、六份报告 artifact 和 macOS ARM64 包保存在本地。
+
+| 目标 | 最低剩余磁盘 GiB | 结果与缓存 |
+|---|---:|---|
+| macOS arm64 | 166.3 | 非 component 构建、ARM64 断言、ad-hoc 严格验签、五项原生冒烟、DMG 校验通过；命中 46,877/46,882，新增 5，2.1 GiB 保存 |
+| Linux x64 | 64.4 | 编译、架构和五项功能断言通过；临时 Profile 清理报 `ENOTEMPTY`，整体失败且未打包；命中 46,648/46,652，2.1 GiB 保存 |
+| Linux arm64 | 63.8 | 285 分钟时间片；命中 44,640/53,045（84.15%），新增 8,405，2.0 GiB 保存 |
+| macOS x64 | 200.5 | 285 分钟时间片；命中 30,191/38,110（79.22%），新增 7,919，1.6 GiB 保存 |
+| Windows x64 | 114.6 | 285 分钟时间片；4,642/19,690 次可缓存，其中 4,427 命中；15,048 次参数不支持，0.2 GiB 保存 |
+| Windows arm64 | 89.7 | 285 分钟时间片；6,374/23,996 次可缓存，其中 4,963 命中；17,622 次参数不支持，0.3 GiB 保存 |
+
+macOS ARM64 下载后的 DMG 已独立核对大小、源码清单和 SHA-256：`57e17915957ac620311b99e82709fa52739f1518c9d57a14e35576748f1d2728`，本机 `hdiutil verify` 也通过。仍没有 Developer ID 签名或公证。四个超时目标没有观察到新增编译错误或磁盘耗尽；Windows ARM64 停止编译时有两个子进程终止提示，缓存和报告仍完成上传。
+
+- 冒烟清理：旧脚本等待父进程 `exit`，在清理前写出成功报告；后续递归删除失败没有进入失败诊断。现在等待 [`close`](https://nodejs.org/docs/latest-v24.x/api/child_process.html#event-close)，POSIX 上为这次冒烟建立独立进程组，关闭超时只终止该组；递归删除使用 [有限重试](https://nodejs.org/docs/latest-v24.x/api/fs.html#fspromisesrmpath-options)。清理结束后才写最终结果，清理失败仍返回非零并保存脱敏诊断。原五项断言和 Linux 沙箱要求保持不变。残留写入竞争仍是对旧故障的推断，未直接确认旧 runner 上的文件写入者。
+- Windows 缓存：两个 Windows job 的真实模块生成命令都明确拒绝 `/clang:-fno-implicit-module-maps`。只新增这一个无文件路径的布尔选项到精确允许列表；显式模块映射及 PCM 参数仍交给 ccache 解析，保留原参数顺序和缓存哈希。这个样本不能证明全部拒绝均同一原因。[Clang 模块缓存条件](https://ccache.dev/manual/4.14.2.html#_c_modules)继续使用既有 depend 模式及配置，不忽略模块依赖。
+
+本地验证：固定 Clang/ccache 生成 Windows x64、ARM64 的小型 PCM/COFF，模块生成和消费均命中缓存，模块文件单独变化、头文件、模块映射、参数变化均失效；缓存与直接编译字节一致。探针使用 Chromium 相同的 `/Brepro` 和 `-fcolor-diagnostics`，避免时间戳和诊断配置使比较失真。每台 Windows runner 在大编译前运行这些检查。冒烟协议 fixture 验证延迟关闭、关闭超时、清理失败及最终报告顺序，不启动用户浏览器，也不代表真实浏览器原生冒烟通过。完整 Windows 构建及 Linux 清理修正仍待新一轮六目标验证；所有目标从同一新提交构建，旧 macOS 包仅保留作证据，不混入新源码发布。

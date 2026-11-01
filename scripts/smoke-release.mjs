@@ -8,7 +8,7 @@ import {randomUUID} from 'node:crypto';
 
 const [executable,report]=process.argv.slice(2);assert(executable&&report);
 const profile=await mkdtemp(join(tmpdir(),'agentic-release-'));
-const reports=new Map(),session=randomUUID();let browser,stopped=false,closed=false,loggedOut=false,stderr='',phase='prepare',discovery;
+const reports=new Map(),session=randomUUID();let browser,stopped=false,closed=false,loggedOut=false,stderr='',phase='prepare',discovery,failure;
 const processResult={exitCode:null,signal:null,spawnError:null};
 const server=createServer((req,res)=>{
  const url=new URL(req.url,'http://127.0.0.1');res.setHeader('Cache-Control','no-store');
@@ -28,12 +28,21 @@ const server=createServer((req,res)=>{
 await new Promise(done=>server.listen(0,'127.0.0.1',done));const base='http://127.0.0.1:'+server.address().port;
 async function until(fn,description){phase=description;const deadline=Date.now()+45000;while(!await fn()){assert(!stopped,'Browser exited');assert(Date.now()<deadline,'Timeout: '+description);await new Promise(r=>setTimeout(r,150));}}
 const checks={};
+async function waitForClose(ms){
+ if(!browser||closed)return true;
+ return new Promise(done=>{
+  const finish=value=>{clearTimeout(timer);browser.removeListener('close',onClose);done(value);};
+  const onClose=()=>finish(true),timer=setTimeout(()=>finish(false),ms);
+  browser.once('close',onClose);
+ });
+}
 try {
  await mkdir(join(profile,'Default'));
  await writeFile(join(profile,'Default/Preferences'),JSON.stringify({session:{restore_on_startup:4,startup_urls:[base+'/?space=main']}}));
  const args=[`--user-data-dir=${profile}`,'--no-first-run','--no-default-browser-check','--mute-audio','--agentic-poc','--password-store=basic','--use-mock-keychain','--disable-features=DialMediaRouteProvider','--enable-features=TabGroupsFocusing:TabGroupsFocusFreezing/false',`--agentic-poc-task-a-url=${base}/?space=task-a`,`--agentic-poc-task-b-url=${base}/?space=task-b`,base+'/?space=main'];
  phase='launch';
- browser=spawn(executable,args,{stdio:['ignore','ignore','pipe']});browser.stderr.on('data',x=>{stderr=(stderr+x).slice(-12000);});
+ // Own the POSIX process group so a shutdown timeout can stop only this smoke.
+ browser=spawn(executable,args,{stdio:['ignore','ignore','pipe'],detached:process.platform!=='win32'});browser.stderr.on('data',x=>{stderr=(stderr+x).slice(-12000);});
  browser.on('exit',(exitCode,signal)=>{stopped=true;Object.assign(processResult,{exitCode,signal});});
  browser.on('error',error=>{stopped=true;processResult.spawnError={code:error.code,message:error.message};});
  browser.on('close',()=>{closed=true;});
@@ -51,23 +60,44 @@ try {
  await until(()=>reports.get('task-a')?.input==='Agentic smoke','scoped input');assert.equal(reports.get('main').input,'');assert.equal(reports.get('task-b').input,'');checks.scopedInput=true;
  await call('task-a','release',lease);
  loggedOut=true;await until(()=>['main','task-a','task-b'].every(id=>reports.get(id)?.loggedIn===false),'shared logout');checks.sharedLogout=true;
- await mkdir(dirname(report),{recursive:true});await writeFile(report,JSON.stringify({status:'passed',platform:process.platform,arch:process.arch,checks,notVerified:['manual UI','installer execution','signing/notarization','VNC','locked screen','models']},null,2)+'\n');
- console.log(JSON.stringify(checks));
 } catch(error) {
  // Capture startup failures before cleanup sends its own termination signal.
- if(stopped&&!closed)await Promise.race([new Promise(done=>browser.once('close',done)),new Promise(done=>setTimeout(done,1000))]);
- if(!discovery)try{discovery=JSON.parse(await readFile(join(profile,'agentic-poc.json'),'utf8'));}catch{}
- const redact=value=>{
-  let text=String(value);
-  for(const secret of [profile,session,base,...Object.values(discovery?.tasks||{})])if(typeof secret==='string'&&secret)text=text.replaceAll(secret,'[redacted]');
-  return text.replace(/Bearer\s+[^\s"']+/gi,'Bearer [redacted]');
- };
- const failure=JSON.parse(JSON.stringify({status:'failed',platform:process.platform,arch:process.arch,phase,checks,error:error.message,process:processResult,stderr},(_key,value)=>typeof value==='string'?redact(value):value));
- await mkdir(dirname(report),{recursive:true});await writeFile(report,JSON.stringify(failure,null,2)+'\n');
- console.error('Browser smoke failed:',JSON.stringify(failure));
- throw error;
+ if(stopped&&!closed)await waitForClose(1000);
+ failure={phase,error:error.message,process:{...processResult},stderr};
 } finally {
- if(browser?.pid&&!stopped){if(process.platform==='win32')execFileSync('taskkill',['/pid',String(browser.pid),'/t','/f'],{stdio:'ignore'});else browser.kill('SIGTERM');await Promise.race([new Promise(done=>browser.once('exit',done)),new Promise(done=>setTimeout(done,5000))]);}
- server.closeAllConnections();server.close();
- if(stopped)await rm(profile,{recursive:true,force:true});
+ if(!discovery)try{discovery=JSON.parse(await readFile(join(profile,'agentic-poc.json'),'utf8'));}catch{}
+ try {
+  let shutdownError;
+  if(browser?.pid&&!stopped){
+   if(process.platform==='win32'){
+    // taskkill may race with normal exit; closure below is the required result.
+    try{execFileSync('taskkill',['/pid',String(browser.pid),'/t','/f'],{stdio:'ignore',timeout:5000});}catch(error){shutdownError=error;}
+   }else browser.kill('SIGTERM');
+  }
+  if(!await waitForClose(5000)){
+   if(process.platform!=='win32'&&browser?.pid){
+    try{process.kill(-browser.pid,'SIGKILL');}catch(error){if(error.code!=='ESRCH')throw error;}
+   }
+   assert(await waitForClose(5000),shutdownError?.message||'Browser stdio did not close after shutdown');
+  }
+  // close also waits for inherited stdio; bounded retries cover late file writes.
+  await rm(profile,{recursive:true,force:true,maxRetries:10,retryDelay:200});
+ }catch(error){
+  if(failure)failure.cleanupError=error.message;
+  else failure={phase:'cleanup',error:error.message,process:{...processResult},stderr};
+  if(!closed){browser?.stderr?.destroy();browser?.unref();}
+ }finally{
+  server.closeAllConnections();await new Promise(done=>server.close(done));
+ }
 }
+const redact=value=>{
+ let text=String(value);
+ for(const secret of [profile,session,base,...Object.values(discovery?.tasks||{})])if(typeof secret==='string'&&secret)text=text.replaceAll(secret,'[redacted]');
+ return text.replace(/Bearer\s+[^\s"']+/gi,'Bearer [redacted]');
+};
+const result=JSON.parse(JSON.stringify({status:failure?'failed':'passed',platform:process.platform,arch:process.arch,checks,
+ ...(failure||{notVerified:['manual UI','installer execution','signing/notarization','VNC','locked screen','models']})},
+ (_key,value)=>typeof value==='string'?redact(value):value));
+await mkdir(dirname(report),{recursive:true});await writeFile(report,JSON.stringify(result,null,2)+'\n');
+if(failure){console.error('Browser smoke failed:',JSON.stringify(result));process.exitCode=1;}
+else console.log(JSON.stringify(checks));

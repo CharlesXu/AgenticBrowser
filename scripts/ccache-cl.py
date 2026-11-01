@@ -1,4 +1,4 @@
-"""Keep known clang-cl code-generation options intact while ccache hashes them."""
+"""Keep known clang-cl options intact while ccache hashes them."""
 import subprocess
 import sys
 import json
@@ -13,8 +13,13 @@ from pathlib import Path
 FORWARDED_OPTIONS = {
     "-fno-strict-overflow", "-fno-math-errno", "-ffp-contract=off",
     "-fdiagnostics-show-inlining-chain", "-fdiagnostics-format=clang",
-    "-O2", "-O3",
+    "-O2", "-O3", "-fno-implicit-module-maps",
 }
+
+# The last option is observed in both Windows jobs' real module commands.
+# It disables implicit map discovery; explicit -fmodule-map-file and
+# -fmodule-file dependencies remain visible to ccache. The native probe checks
+# module creation/consumption and map/header/PCM invalidation before building.
 
 
 def cache_args(args):
