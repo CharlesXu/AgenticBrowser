@@ -4,6 +4,7 @@ import {execFileSync,spawn} from 'node:child_process';
 import {availableParallelism,totalmem} from 'node:os';
 import {resolve,relative,dirname,join,isAbsolute} from 'node:path';
 import {createHash} from 'node:crypto';
+import {runLinuxSmoke} from './run-linux-smoke.mjs';
 
 const [mode,os,arch]=process.argv.slice(2);
 const buildStarted=Date.now();
@@ -155,6 +156,9 @@ if(os==='windows') {
 run('ccache',['--zero-stats']);
 await writeFile(join(output,'args.gn'),`target_os = "${{macos:'mac',windows:'win',linux:'linux'}[os]}"\ntarget_cpu = "${arch}"\nis_debug = false\nis_component_build = false\nis_official_build = false\nsymbol_level = 0\nblink_symbol_level = 0\nv8_symbol_level = 0\nchrome_pgo_phase = 0\nuse_thin_lto = false\nuse_remoteexec = false\ncc_wrapper = ${JSON.stringify(ccWrapper)}\n${os==='macos'?'use_system_xcode = true\n':''}`);
 run(tool('gn'),['gen',outRelative],{cwd:source});
+// Capture a few real commands and ccache's reason; the synthetic probe cannot
+// establish compatibility with every Chromium compilation configuration.
+if(os==='windows')process.env.AGENTIC_CCACHE_DIAGNOSTICS=reportDir;
 const targets=os==='linux'?['chrome','chrome_sandbox']:['chrome'];
 await phase('compile');
 await compile(['-C',outRelative,'-j',jobs,...targets]);
@@ -164,7 +168,9 @@ const stage=resolve('.runtime/package',target,'Agentic Browser');await mkdir(sta
 let executable;
 if(os==='macos') {
  const app=join(stage,'Agentic Browser.app');await rename(join(output,'Agentic Browser.app'),app);
- executable=join(app,'Contents/MacOS/Agentic Browser');run('codesign',['--verify','--deep','--strict',app]);
+ executable=join(app,'Contents/MacOS/Agentic Browser');
+ run('python3',['scripts/sign-ci-macos.py',app,join(reportDir,`signing-${target}.json`)]);
+ run('codesign',['--verify','--deep','--strict',app]);
 } else {
  const dependencies=capture(tool('gn'),['desc',outRelative,'//chrome:chrome','runtime_deps'],source).split(/\r?\n/).map(x=>x.trim()).filter(Boolean);
  if(os==='linux')dependencies.push('chrome_sandbox');
@@ -183,7 +189,7 @@ else {const offset=binary.readUInt32LE(0x3c);assert.equal(binary.subarray(offset
 const smokeArgs=['scripts/smoke-release.mjs',executable,join(reportDir,`smoke-${target}.json`)];
 if(!crossLinuxArm64) {
  await phase('smoke');
- if(os==='linux')run('xvfb-run',['-a',process.execPath,...smokeArgs]);
+ if(os==='linux')await runLinuxSmoke(executable,join(reportDir,`smoke-${target}.json`));
  else run(process.execPath,smokeArgs);
 }
 // ARM64 is transferred as a candidate; only a native smoke job can approve it.
@@ -194,7 +200,7 @@ await phase('package');
 await cp(join(source,'LICENSE'),join(stage,'LICENSE'));
 await cp('NOTICE.md',join(stage,'NOTICE.md'));
 await cp('licenses',join(stage,'licenses'),{recursive:true});
-await writeFile(join(stage,'README.txt'),'Agentic Browser '+version+'\nExperimental PoC. No developer certificate signing or notarization.\nLinux: run ./chrome with a working user-namespace sandbox. Never use --no-sandbox.\nWindows: extract the ZIP and run chrome.exe. No installer or registry integration is included.\nMCP/Skill/Plugin are in the separate integration archive.\n');
+await writeFile(join(stage,'README.txt'),'Agentic Browser '+version+'\nExperimental PoC. No developer certificate signing or notarization. macOS uses ad-hoc signatures for bundle integrity only.\nLinux: run ./chrome with a working user-namespace sandbox. If host policy prevents this, an administrator must install the bundled chrome_sandbox helper in a root-owned, non-user-writable directory with owner root and mode 4755, and set CHROME_DEVEL_SANDBOX to that installed file. Never use --no-sandbox.\nWindows: extract the ZIP and run chrome.exe. No installer or registry integration is included.\nMCP/Skill/Plugin are in the separate integration archive.\n');
 const basename=`Agentic-Browser-${version}-${target}`;
 let asset;
 if(os==='macos') {

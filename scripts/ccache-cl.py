@@ -1,6 +1,9 @@
 """Keep known clang-cl code-generation options intact while ccache hashes them."""
 import subprocess
 import sys
+import json
+import os
+from pathlib import Path
 
 
 # ccache 4.14.2 rejects all /clang: forwarding. These single-token options do
@@ -25,4 +28,28 @@ def cache_args(args):
 
 if __name__ == "__main__":
     compiler, *args = sys.argv[1:]
-    sys.exit(subprocess.call(["ccache", compiler, *cache_args(args)]))
+    env = dict(os.environ)
+    report = None
+    directory = env.get("AGENTIC_CCACHE_DIAGNOSTICS")
+    if directory:
+        # At most four actual compile commands per job. Exclusive creation also
+        # prevents concurrent compiler processes from overwriting evidence.
+        unknown = [a for a in args if a.startswith(("/clang:", "-clang:"))
+                   and a[7:] not in FORWARDED_OPTIONS]
+        group = "forwarding" if unknown else "modules" if "-fmodules" in args else "cxx" if "/TP" in args else "c"
+        path = Path(directory) / ("cache-command-" + group + ".json")
+        try:
+            report = path.open("x")
+            env["CCACHE_LOGFILE"] = str(path.with_suffix(".log"))
+        except FileExistsError:
+            pass
+    code = subprocess.call(["ccache", compiler, *cache_args(args)], env=env)
+    if report:
+        log = Path(env["CCACHE_LOGFILE"])
+        diagnostic = log.read_text(errors="replace") if log.exists() else ""
+        json.dump({"compiler": compiler, "arguments": args, "exitCode": code,
+                   "ccacheLog": diagnostic[-16000:]}, report, indent=2)
+        report.write("\n")
+        report.close()
+        log.unlink(missing_ok=True)
+    sys.exit(code)

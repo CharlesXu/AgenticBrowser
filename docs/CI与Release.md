@@ -177,3 +177,24 @@ Linux x64 缓存命中 42,223/46,652（90.51%）。四个 Unix 目标的缓存�
 - Linux 冒烟：原脚本丢弃退出码、信号和启动错误，也没有输出收集的 stderr，当前日志无法确定退出原因。增加有长度限制并遮盖临时会话数据的失败报告，保存阶段、已通过检查、退出信息和 stderr。保持原验收条件与沙箱要求；没有将未知原因归为沙箱、缺库或产品崩溃。
 
 本地验证：固定 Clang/ccache 在 macOS 上生成 Windows x64、ARM64 小型 COFF 对象，复现原参数拒绝并通过上述缓存测试；使用与 Chromium 相同的 `/Brepro` 排除对象时间戳差异。启动失败（ENOENT）与进程非零退出的诊断检查、项目检查、Python 语法与 actionlint 通过。这些不等于 Windows 原生大编译或 Linux 浏览器冒烟通过；实际结果继续以新一轮六目标报告为准。
+
+### 第四轮完整报告与运行包准备
+
+[运行 41242734198](https://github.com/CharlesXu/AgenticBrowser/actions/runs/41242734198)，源码 `431040fa1a99d2aa926d498dd29bdbbc96b84cf5`，六目标均失败，Linux ARM64 原生冒烟及发布跳过。七份已执行任务日志和全部六份报告 artifact 已保留在本地；本轮没有完成打包或通过原生冒烟的目标。
+
+| 目标 | 最低剩余磁盘 GiB | 结果与缓存 |
+|---|---:|---|
+| Linux x64 | 64.4 | 编译及 ELF x64 检查通过；冒烟以 `No usable sandbox!`、SIGABRT 退出。命中 46,648/46,652，2.1 GiB 缓存保存 |
+| Linux arm64 | 66.8 | 285 分钟时间片；命中 33,301/44,641（74.60%），新增 11,340，1.4 GiB 保存 |
+| macOS arm64 | 167.6 | 完整编译成功；stage 的严格签名校验失败，架构检查、冒烟及打包未到达。命中 40,010/46,882，2.1 GiB 保存 |
+| macOS x64 | 201.8 | 285 分钟时间片；命中 24,655/30,191（81.66%），新增 5,536，1.2 GiB 保存 |
+| Windows x64 | 115.2 | SDK、原生缓存探针通过；285 分钟结束。4,427/17,918 次可缓存，13,491 次参数不支持，0.2 GiB 保存 |
+| Windows arm64 | 90.1 | SDK、原生缓存探针通过；285 分钟结束。4,963/21,007 次可缓存，其中 235 次命中；16,044 次参数不支持，0.2 GiB 保存 |
+
+没有磁盘耗尽。时间片目标没有观察到新增编译错误；步数不代表耗时完成率。缓存探针通过也不代表完整 Chromium 参数集合均可缓存。
+
+- Linux：固定源码发现 `chrome-sandbox` 或 `CHROME_DEVEL_SANDBOX`，原 CI 只携带 `chrome_sandbox`，未配置可用 helper。新流程把同次构建、同架构且散列一致的 helper 安装到临时 runner 的独立 root 目录，核对 root 所有权与 4755 权限，仅向原生冒烟传入环境变量，最后移除临时 helper。覆盖 x64 和独立 ARM64 冒烟；不修改全局 AppArmor/sysctl，不关闭 Chromium 沙箱。报告补充实际用户命名空间策略值。安装在 runner 上不等于给用户设备安装；包内 README 说明宿主沙箱要求。
+- macOS：原 CI 在 stage 后直接严格验签，没有完整应用包签名步骤，报 `code has no resources but signature indicates they must be present`。最小嵌套应用在本机复现同一诊断；远端失败包未上传，其资源封存内容没有直接检查。对 stage 内 Mach-O 和嵌套 bundle 按由内到外的顺序作 ad-hoc 签名，保留已有 entitlements/flags，再执行原有深度严格校验。这遵循 [Apple 嵌套代码签名顺序](https://developer.apple.com/library/archive/technotes/tn2206/_index.html)，不使用 `--deep` 代替逐项签名。ad-hoc 仅验证完整性，仍没有 Developer ID 签名或公证。
+- Windows：保留七个已验证参数的精确处理范围。完整构建的实际拒绝参数尚无证据，不盲目添加跳过项；每个 job 最多采集四类真实编译命令和对应 [ccache 日志](https://ccache.dev/manual/4.14.2.html#config_log_file)，与资源报告一同上传，供下一轮精确修正。既有缓存继续保存。
+
+本地检查：小型嵌套 macOS 应用签名后严格验签及启动成功，修改内层资源后校验拒绝；固定 Clang/ccache 的两种 Windows COFF 探针及有限诊断采样通过。Linux helper 的平台保护检查、项目检查、Python 语法和 actionlint 通过。完整 macOS 浏览器及 Linux 原生沙箱启动仍待新一轮验证，Windows 完整缓存兼容仍未解决。

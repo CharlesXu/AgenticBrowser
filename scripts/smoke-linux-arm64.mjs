@@ -4,6 +4,7 @@ import {execFileSync} from 'node:child_process';
 import {createHash} from 'node:crypto';
 import {resolve,join} from 'node:path';
 import {pathToFileURL} from 'node:url';
+import {runLinuxSmoke} from './run-linux-smoke.mjs';
 
 // A cross-built package cannot be promoted until this script runs on ARM64.
 export async function verifyCandidate(dist,sourceCommit,upstream,version) {
@@ -38,7 +39,7 @@ async function main() {
  const executable=join(stage,'Agentic Browser/chrome'),binary=await readFile(executable);
  assert.equal(binary.subarray(0,4).toString('hex'),'7f454c46');assert.equal(binary.readUInt16LE(18),183);
  const report=resolve('.runtime/ci/smoke-linux-arm64.json');
- execFileSync('xvfb-run',['-a',process.execPath,'scripts/smoke-release.mjs',executable,report],{stdio:'inherit'});
+ await runLinuxSmoke(executable,report);
  const smoke=JSON.parse(await readFile(report,'utf8'));
  assert.equal(smoke.status,'passed');assert.equal(smoke.platform,'linux');assert.equal(smoke.arch,'arm64');
  for(const check of ['threeSpaces','sharedLogin','mainProtected','scopedInput','sharedLogout'])assert.equal(smoke.checks[check],true);
