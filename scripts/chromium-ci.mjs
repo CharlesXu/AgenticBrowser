@@ -91,6 +91,7 @@ if(mode==='preflight')process.exit(0);
 assert.equal(process.env.GITHUB_ACTIONS,'true','Release build is restricted to an isolated Actions checkout.');
 assert.equal(capture('git',['status','--porcelain','--untracked-files=no']),'','Release source must be committed.');
 assert(!/[&|<>^%!"\r\n]/.test(root),'Use a simple CI checkout path.');
+if(os==='windows')run('pwsh',['-NoProfile','-File','scripts/verify-ci-windows-sandbox.ps1','-TargetArch',arch]);
 await access(source).then(()=>{throw Error('Fresh isolated checkout required; will not replace an existing Chromium tree.');},()=>{});
 const phase=async name=>{console.log('Build phase:',name);await writeFile(join(reportDir,`phase-${target}.txt`),name);};
 await phase('runner-cleanup');
@@ -186,6 +187,7 @@ const binary=await readFile(executable);let machine;
 if(os==='macos') {assert.equal(binary.readUInt32LE(0),0xfeedfacf);machine=binary.readUInt32LE(4);assert.equal(machine,arch==='arm64'?0x100000c:0x1000007);}
 else if(os==='linux'){assert.equal(binary.subarray(0,4).toString('hex'),'7f454c46');machine=binary.readUInt16LE(18);assert.equal(machine,arch==='arm64'?183:62);}
 else {const offset=binary.readUInt32LE(0x3c);assert.equal(binary.subarray(offset,offset+4).toString('hex'),'50450000');machine=binary.readUInt16LE(offset+4);assert.equal(machine,arch==='arm64'?0xaa64:0x8664);}
+if(os==='windows')run('pwsh',['-NoProfile','-File','scripts/prepare-ci-windows-sandbox.ps1','-TargetArch',arch]);
 const smokeArgs=['scripts/smoke-release.mjs',executable,join(reportDir,`smoke-${target}.json`)];
 if(!crossLinuxArm64) {
  await phase('smoke');

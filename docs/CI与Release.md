@@ -243,3 +243,30 @@ macOS x64 的签名错误为 `code object is not signed at all`，子项指向�
 为判断后续编译耗时，既有五秒磁盘采样增加 [Node OS 计数器](https://nodejs.org/api/os.html#oscpus) 的整机及逐逻辑 CPU 忙碌比例、空闲内存和编译阶段加权 CPU 均值。阶段交界的 CPU 区间不计入编译均值。数据包含系统及其他进程；`os.freemem()` 不是可回收内存、编译进程 RSS、换页或 I/O 压力，短峰值可能遗漏，仍未保留 Siso trace/metrics。隔离负载采样和失败退出码保留检查通过；托管 runner 实测留待新一轮，不据本机数据调整并发。保持原并发数、时间预算和免费 runner，不修改上游版本、缓存允许列表或沙箱要求。
 
 整轮结束并保存完整证据后才实施上述修正。由于源码改变，下一轮六目标必须从同一新提交重建，不能将此前两个成功包混入发布。
+
+### 第七轮三次尝试与 Windows 暂存目录权限
+
+[运行 41344192878](https://github.com/CharlesXu/AgenticBrowser/actions/runs/41344192878)，源码 `a886714241019db2c6f30f94f27bec97aaf82276`，第三次尝试于 2026-11-02 12:52:50 UTC 整轮结束。前两次的失败目标均为编译预算停止；核对真实缓存恢复、命中及新增保存后，分别只重跑失败任务。第三次出现 Windows x64 原生冒烟失败，不能继续按纯编译超时重跑整轮。
+
+| 目标 | 最终结果 | 最新实际编译的缓存命中／未命中 | 编译阶段整机 CPU 忙碌均值 |
+|---|---|---|---:|
+| macOS x64 | 沿用首次成功；16 个 Mach-O、10 个 bundle 严格验签、架构、五项原生冒烟及 DMG 全通过 | 46,333/46,337，未命中 4 | 98.11% |
+| Linux arm64 | 沿用首次交叉构建候选；架构及打包通过，独立原生冒烟跳过 | 78,334/79,387，未命中 1,053 | 99.67% |
+| Linux x64 | 第三次编译 4h18m47.58s；架构、沙箱 helper、五项原生冒烟和打包通过 | 35,039/46,652，未命中 11,613 | 99.87% |
+| Windows x64 | 第三次编译 1h56m55.85s、PE x64 通过；原生冒烟启动失败，未打包 | 46,277/47,612，未命中 1,335 | 98.70% |
+| macOS arm64 | 第三次 285 分钟编译预算停止，未到达签名、架构、冒烟或打包 | 26,761/34,122，未命中 7,361 | 80.73% |
+| Windows arm64 | 第三次扣除准备时间后约 284.49 分钟编译预算停止，未到达架构、冒烟或打包 | 42,042/44,122，未命中 2,080 | 98.04% |
+
+第三次四个重跑目标均实际恢复第二次缓存，并保存非空新缓存。两个 Windows 的 SDK、基础及模块原生缓存探针通过；真实 C/C++/模块样本均命中，`-pedantic` 拒绝样本直接编译退出 0。ARM64 的 1 次 `Compilation failed` 计数未映射到具体调用；预算停止后有 4 条 taskkill 提示，不能据此断言计数来源。未观察到预算停止前的源码编译诊断或磁盘耗尽。CPU 均值已独立重算，仍为整机数据；低 `os.freemem()` 不能单独证明内存压力、换页或 I/O 瓶颈，不据此调整并发。
+
+本轮首次 Linux x64、macOS ARM64 明确没有命中可用缓存；此前对应成功缓存已从 API 列表消失。多代缓存占用容量与平台淘汰策略相符，但 API 未提供删除原因，不能把推断当事实。第三次结束时缓存 API 为 6 条、10,370,618,153 字节；没有手工删除、增加收费容量或改变缓存策略。缺失成功目标的缓存不等于丢失其包。
+
+全部证据按尝试隔离保留：首次清单 46 个文件、第二次 28 个文件、第三次 35 个文件，旧清单逐项大小和散列复核不变；最新 9 个 artifact 的全部 46 个文件已覆盖。macOS x64 DMG、Linux ARM64 候选和 Linux x64 包均独立核对同源清单、大小、SHA-256、架构及许可证；DMG 严格验签通过。Linux x64 包 SHA-256 为 `5bffff5c99f0fc675092f46a982625fa7052e11b2336248e6f58c286370cc402`。没有在本机启动这些浏览器包；仅 macOS x64 和 Linux x64 取得本提交完整原生验收，未发布。
+
+Windows x64 的失败报告为 `Browser exited`，退出码 `2147483651`，五项检查为空。stderr 明确指出 `sandbox_win.cc:805` 的 AppContainer 对暂存 `chrome.exe` 的读取／执行检查被拒绝（`Access is denied (0x5)`）。固定源码在这里检查 `GENERIC_READ | GENERIC_EXECUTE`；已有日志没有 runner ACL 明细，尚不能确定具体缺失或拒绝的 ACE。
+
+按 [Chromium LPAC 文件权限说明](https://chromium.googlesource.com/chromium/src/+/main/docs/design/sandbox.md#LPAC-File-System-Permissions)和固定源码 `testing/scripts/common.py:set_lpac_acls` 的测试目录做法，在 Windows stage 完成架构检查后、冒烟前，仅对暂存应用目录添加 `S-1-15-2-2` 的可继承读取／执行权限。使用 [icacls 的增量 `/grant`](https://learn.microsoft.com/en-us/windows-server/administration/windows-commands/icacls)，不授予写入、不重置 DACL、不移除拒绝规则、不改父目录、不关闭沙箱。脚本拒绝路径中的 reparse point，检查所有暂存子项的继承结果，并记录应用目录、主程序和主 DLL 的修正前后 ACL。受保护子项不能继承时失败；这些 ACE 检查不替代浏览器的有效权限检查和原生冒烟。
+
+两个 Windows runner 在大编译前运行临时目录 fixture，检查缺失权限修复、嵌套文件继承、只读执行、内容／所有者／父目录和无关目录 ACL 保持、重复调用、junction 拒绝、显式拒绝保留，以及禁止继承的子项失败。fixture 不运行浏览器。本机仅验证 PowerShell AST、非 Windows 平台保护、项目检查及差异格式；Windows ACL fixture 与完整原生冒烟仍待新一轮 CI 验证，不能宣称本次修正已通过 Windows 原生验收。
+
+暂存目录 ACL 不由 ZIP 保留；Windows 包仍是无安装器的便携 ZIP，解压位置必须允许沙箱读取、执行应用文件。此次修正针对 CI 暂存环境，不构成用户机器上的安装或权限配置验收。整轮结束并收齐证据后才实施修改；六目标将从同一新提交重建，旧成功包不混入新版本发布。
