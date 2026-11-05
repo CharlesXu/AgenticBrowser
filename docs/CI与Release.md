@@ -38,7 +38,7 @@
 
 macOS 托管 runner 先通过进程级 `DEVELOPER_DIR` 选择已预装的最高正式 Xcode，再执行预检和清理；下载源码前检查 Chromium 模块构建实际需要的四个 SDK modulemap 文件。
 
-单次编译最多 285 分钟，整个下载／构建／打包步骤最多 330 分钟，为总计 360 分钟的 job 留出缓存与报告上传时间。使用独立 ccache 4.14.2，校验官方资产 SHA-256，缓存上限 8 GiB；只缓存编译结果，不缓存 Profile、凭据或整个源码树。Clang 模块使用 depend 模式与官方文档要求的 `modules,time_macros` 设置，编译器按内容校验。缓存按平台、架构及上游配置隔离；每次使用新 key，失败也保存，以便下次重跑同一目标复用。达到时间片仍记为未完成，不跳过最终链接、原生冒烟或发布门槛。Actions 缓存可能被配额淘汰，实际命中和用量记录在 `cache-<target>.json`；没有增购缓存容量或机器。
+GitHub 托管 runner 的[单 job 硬上限为 6 小时](https://docs.github.com/en/actions/reference/limits)，[单步骤上限为 360 分钟](https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax#jobsjob_idstepstimeout-minutes)。job 保持 360 分钟；macOS x64 与 Windows ARM64 的下载／构建／打包步骤由 330 分钟提高到 360 分钟，并取消固定 285 分钟编译片。从 job 的第一个用户步骤记时，编译可使用截至第 350 分钟的全部剩余时间，包含此前 checkout、工具安装、缓存恢复和源码准备的耗时；最后约 10 分钟用于停止进程、签名／权限检查、原生冒烟、打包、缓存与资产上传、清理，以及开始记时前的 runner 初始化余量。该余量不是收尾一定完成的保证；任何阶段未通过仍不得发布。缺失、无效或未来的起始时间会在下载前失败，不退回无限预算。其余四个目标维持原有最多 285 分钟编译片、扣除准备后第 320 分钟停止编译、330 分钟步骤上限。使用独立 ccache 4.14.2，校验官方资产 SHA-256，缓存上限 8 GiB；只缓存编译结果，不缓存 Profile、凭据或整个源码树。Clang 模块使用 depend 模式与官方文档要求的 `modules,time_macros` 设置，编译器按内容校验。缓存按平台、架构及上游配置隔离；每次使用新 key，失败也保存，以便下次重跑同一目标复用。达到时间片仍记为未完成，不跳过最终链接、原生冒烟或发布门槛。Actions 缓存可能被配额淘汰，实际命中和用量记录在 `cache-<target>.json`；没有增购缓存容量或机器。
 
 默认构建 runner 为 `macos-15-intel`、`macos-15`、`windows-2025`、`windows-11-arm` 和 `ubuntu-24.04`。Linux ARM64 在 x64 上交叉编译，再在 `ubuntu-24.04-arm` 上原生启动验收。可在仓库 Actions Variables 中为以下变量设置 JSON 标签数组，指向已配置、专用于此仓库的 runner：
 

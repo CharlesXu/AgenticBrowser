@@ -11,6 +11,9 @@ const buildStarted=Date.now();
 assert(['preflight','build'].includes(mode)&&['macos','windows','linux'].includes(os)&&['x64','arm64'].includes(arch),'Usage: chromium-ci.mjs preflight|build macos|windows|linux x64|arm64');
 const root=process.cwd(),source=resolve('.chromium/src'),depot=resolve('.tools/depot_tools');
 const target=`${os}-${arch}`,reportDir=resolve('.runtime/ci'),dist=resolve('.runtime/release',target);
+const extendedCompileBudget=mode==='build'&&(target==='macos-x64'||target==='windows-arm64');
+const jobStarted=extendedCompileBudget?Number(process.env.AGENTIC_CI_JOB_STARTED_AT)*1000:null;
+if(extendedCompileBudget)assert(Number.isSafeInteger(jobStarted)&&jobStarted>0&&jobStarted<=buildStarted,'Missing or invalid build job start; refusing to exceed the hosted job limit.');
 const crossLinuxArm64=os==='linux'&&arch==='arm64';
 const upstream=JSON.parse(await readFile('chromium/upstream.json','utf8'));
 const version=JSON.parse(await readFile('package.json','utf8')).version;
@@ -27,10 +30,14 @@ const capture=(cmd,args=[],cwd=root)=>run(cmd,args,{cwd,stdio:['ignore','pipe','
 async function compile(args) {
  // Stop gracefully before the hosted job limit so the completed object cache can be saved.
  const cmd=tool('autoninja'),windows=process.platform==='win32';
- // Preparation counts toward the step's 330-minute limit, too. Reserve ten
- // minutes for stopping the process and saving diagnostics/cache statistics.
- const compileBudgetMs=Math.min(285*60000,320*60000-(Date.now()-buildStarted));
- assert(compileBudgetMs>0,'Preparation exhausted the build step budget.');
+ // For the two extended targets, charge checkout, tools, cache restore and
+ // preparation against the six-hour job. The first workflow step records the
+ // clock; leave ten minutes for process shutdown, packaging, uploads and cleanup.
+ // Other targets keep their existing 285-minute slice and 330-minute step.
+ const compileStarted=Date.now();
+ const compileDeadline=extendedCompileBudget?jobStarted+350*60000:Math.min(buildStarted+320*60000,compileStarted+285*60000);
+ const compileBudgetMs=compileDeadline-compileStarted;
+ assert(compileBudgetMs>0,'Preparation exhausted the build step or job budget.');
  console.log('Compile budget minutes:',Math.floor(compileBudgetMs/60000));
  const child=spawn(windows?`"${cmd}"`:cmd,windows?args.map(arg=>`"${arg}"`):args,
   {cwd:source,stdio:'inherit',detached:!windows,shell:windows});
@@ -52,7 +59,7 @@ async function compile(args) {
   clearTimeout(timer);clearTimeout(force);
   const stats=capture('ccache',['--show-stats','--verbose']);
   console.log(stats);
-  await writeFile(join(reportDir,`cache-${target}.json`),JSON.stringify({target,sourceCommit:sha,timedOut,compileBudgetMs,stats},null,2)+'\n');
+  await writeFile(join(reportDir,`cache-${target}.json`),JSON.stringify({target,sourceCommit:sha,timedOut,compileBudgetMs,compileStartedAt:new Date(compileStarted).toISOString(),compileDeadlineAt:new Date(compileDeadline).toISOString(),jobStartedAt:extendedCompileBudget?new Date(jobStarted).toISOString():null,finishReserveMinutes:extendedCompileBudget?10:null,stats},null,2)+'\n');
  }
 }
 const disk=await statfs(root),freeGiB=disk.bavail*disk.bsize/1024**3,ramGiB=totalmem()/1024**3;

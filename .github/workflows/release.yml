@@ -67,6 +67,10 @@ jobs:
     timeout-minutes: 360
     name: ${{ matrix.os }}-${{ matrix.arch }}
     steps:
+      - name: Record build job start for the six-hour budget
+        if: inputs.mode != 'preflight' && ((matrix.os == 'macos' && matrix.arch == 'x64') || (matrix.os == 'windows' && matrix.arch == 'arm64'))
+        shell: bash
+        run: echo "AGENTIC_CI_JOB_STARTED_AT=$(date -u +%s)" >> "$GITHUB_ENV"
       - uses: actions/checkout@v6
         with:
           persist-credentials: false
@@ -90,7 +94,7 @@ jobs:
           restore-keys: ccache-v1-${{ matrix.os }}-${{ matrix.arch }}-${{ hashFiles('chromium/upstream.json') }}-
       - name: Chromium build, runtime smoke and package
         if: inputs.mode != 'preflight'
-        timeout-minutes: 330
+        timeout-minutes: ${{ ((matrix.os == 'macos' && matrix.arch == 'x64') || (matrix.os == 'windows' && matrix.arch == 'arm64')) && 360 || 330 }}
         run: node scripts/measure-ci-disk.mjs ${{ matrix.os }}-${{ matrix.arch }} node scripts/chromium-ci.mjs build ${{ matrix.os }} ${{ matrix.arch }}
       - name: Save completed compilation work even after failure
         if: always() && inputs.mode != 'preflight' && steps.cache.outcome == 'success'
